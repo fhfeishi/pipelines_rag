@@ -10,7 +10,7 @@ assert Path(qwen3_embedding_06b_path).is_dir(), "qwen3_embedding_06b_path is not
 
 
 # cloud api 
-deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", None)
-assert deepseek_api_key is not None, "deepseek_api_key is None !!! "
-dashscope_api_key: str = os.getenv("DASHSCOPE_API_KEY", None)
-assert dashscope_api_key is not None, "dashscope_api_key is None !!! "
+deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", str())
+assert deepseek_api_key, "deepseek_api_key is empty !!! "
+dashscope_api_key: str = os.getenv("DASHSCOPE_API_KEY", str())
+assert dashscope_api_key, "dashscope_api_key is empty !!! "

@@ -4,7 +4,7 @@
 """本地 embedding 模型加载与使用。
 
 方案:
-  a. sentence_transformers（当前方案，开箱即用，API 简洁）
+  a. sentence_transformers（当前方案，开箱即用，API 简洁）  <----> from langchain_huggingface import HuggingFaceEmbeddings
   b. transformers.AutoModel + mean pooling（更底层，适合定制逻辑）
   c. fastembed（轻量，ONNX 推理，CPU 友好）
   d. Text Embeddings Inference（HuggingFace Docker 服务，生产环境）
@@ -21,20 +21,37 @@ from typing import Sequence
 
 import numpy as np
 import numpy.typing as npt
+
 # a. sentence_transformers  --开箱即用，API 简洁
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cos_sim 
+from langchain_huggingface import HuggingFaceEmbeddings
+
 # b. transformers.AutoModel + mean pooling  --更底层，适合定制逻辑
 # import torch
 # from transformers import AutoTokenizer, AutoModel
 
 # c. fastembed  --轻量，ONNX 推理，CPU 友好
 # from fastembed import TextEmbedding
+
 # d. Text Embeddings Inference   --huggingface   docker-service
 
-MODEL_PATH = r"/mnt/e/local_models/embedding/iic--nlp_gte_sentence-embedding_chinese-large"
-# MODEL_PATH = r"/mnt/e/local_models/embedding/iic--nlp_gte_sentence-embedding_chinese-base"
+# # # python rag_langchain/embeddings.py, 会让sys.path[0] 变成 proj_root/rag_langchain
+# import sys 
+# print("sys.path: ", sys.path)
+# # solution 
+# # (proj_root) $ python -m rag_langchain.embeddings 会让sys.path[0] 保持 proj_root
+# # (proj_root) $ uv run -m rag_langchain.embeddings 会让sys.path[0] 保持 proj_root
 
+
+from configs.constants import qwen3_embedding_06b_path  # ModuleNotFoundError: No module named 'configs'
+# from constants import qwen3_embedding_06b_path  # ModuleNotFoundError: No module named 'constants'
+# solution:
+# (proj_root) $ python -m rag_langchain.embeddings
+# (proj_root) $ uv run -m rag_langchain.embeddings
+
+
+MODEL_PATH = qwen3_embedding_06b_path
 
 def resolve_local_model_path(path: str) -> Path:
     """将 Windows 路径（E:\\...）转为当前系统可用的本地目录。
@@ -71,11 +88,25 @@ def load_embed_model(path: str = MODEL_PATH) -> SentenceTransformer:
         return _embed_model
 
     local_path = resolve_local_model_path(path)
+    # SentenceTransformer 方式
     _embed_model = SentenceTransformer(
         str(local_path),
         local_files_only=True,       # 强制本地，不联网
         device="cpu",                # 可按需改为 "cuda"
     )
+    
+    # # HuggingFaceEmbeddings 方式
+    # _embed_model = HuggingFaceEmbeddings(
+    #     model_name=str(local_path),
+    #     model_kwargs={
+    #         "device": "cpu",
+    #         "local_files_only": True,
+    #     },
+    #     encode_kwargs={
+    #         "normalize_embeddings": True,
+    #     },
+    # )
+    
     return _embed_model
 
 

@@ -5,10 +5,10 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document 
 from langchain_text_splitters import RecursiveCharacterTextSplitter  # chunking  
 import tempfile 
-import shutil 
+from configs.config import settings
 
 # large or base embedding model 
-embed_path = r"/mnt/e/local_models/embedding/iic--nlp_gte_sentence-embedding_chinese-base"
+embed_path = settings.qwen3_embedding_06b_path
 embeddings_model = HuggingFaceEmbeddings(
     model_name=embed_path,
     model_kwargs={"device": "cpu"},
