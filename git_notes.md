@@ -34,8 +34,12 @@ Recovery actions:
 - Confirmed `origin/main` had advanced to `341c38e3b7fa8eaae32eee4db85ded77ccb92319`
   with remote-only commit `Delete rag_langchain directory`.
 
-Resolution plan:
+Resolution:
 
-- Commit the current local workspace, including this note.
-- Push local `main` to `origin/main` with force-with-lease so the remote-only
-  deletion commit is overwritten by the local repository state.
+- Committed the current local workspace as
+  `9e236465f9749b58cfaa4ec645dc4e4e9f143c2e`.
+- Pushed local `main` to `origin/main` with `--force-with-lease`.
+- Remote `main` was force-updated from
+  `341c38e3b7fa8eaae32eee4db85ded77ccb92319` to
+  `9e236465f9749b58cfaa4ec645dc4e4e9f143c2e`, overwriting the remote-only
+  deletion commit.
