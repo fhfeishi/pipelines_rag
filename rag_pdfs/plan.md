@@ -2,7 +2,7 @@
 
 > 工作目录：`rag_langchain`  
 > **实验性**：PDF 解析与图片 ingest 仍在迭代，模块以 `pdf_*` 前缀隔离。  
-> 当前实现：`ingest_img.py`（canonical ingest CLI）+ `query_img.py`（canonical query CLI）+ `pdf_parser` / `pdf_filter` / `pdf_layout`  
+> 当前实现：`ingest_img.py`（CLI 入口）+ `pdf_parser` / `pdf_filter` / `pdf_layout`  
 > 参考经验：`notes.md`（博客结论 + 实验设计）  
 > 运行记录：**[`logs.md`](logs.md)**
 
@@ -12,14 +12,13 @@
 
 | 模块 | 作用 |
 |------|------|
-| `ingest_img.py` | canonical ingest CLI：编排 parse → filter → caption → chunk → Chroma |
+| `ingest_img.py` | CLI 入口：编排 parse → filter → caption → chunk → Chroma |
 | `pdf_layout.py` | Layout 元素模型、阅读顺序、section title、上下文提取 |
 | `pdf_parser.py` | opendataloader-pdf 调用、flatten、图片路径解析 |
 | `pdf_filter.py` | L1/L2 图片规则过滤（VLM 之前） |
 | `caption_chunks.py` | inline / separate chunk 构建（通用 RAG ingest，无 `pdf_` 前缀） |
 | `hybrid_retrieve.py` | BM25 + 向量余弦混合检索 |
-| `query_img.py` | canonical query CLI（实验组 A/B/C + hybrid/vector 检索） |
-| `eval_img.py` | LangChain 批量实验 CLI（策略 × 检索模式 × alpha，对比 evidence 指标） |
+| `query_img.py` | Query 端（实验组 A/B/C + hybrid/vector 检索） |
 
 PDF 相关逻辑集中在 `pdf_*`，便于日后替换 parser 或单独废弃实验路径。
 
@@ -66,20 +65,19 @@ Vision at ingestion, text at retrieval.
 | 文件 | 状态 | 作用 |
 |------|------|------|
 | `notes.md` | 完整 | 博客经验、A/B/C 实验设计、指标 |
-| `ingest_img.py` | 可运行 | canonical ingest CLI：PDF → caption → chunk → JSONL/Chroma |
+| `ingest_img.py` | 可运行 | CLI：PDF → caption → chunk → JSONL/Chroma |
 | `pdf_layout.py` | 实验性 | Layout 元素、阅读顺序、上下文 |
 | `pdf_parser.py` | 实验性 | opendataloader-pdf 解析 |
 | `pdf_filter.py` | 实验性 | L1/L2 图片过滤 |
 | `caption_chunks.py` | 可用 | inline / separate chunk 构建 |
 | `hybrid_retrieve.py` | 可用 | BM25 + 向量余弦混合检索 |
-| `query_img.py` | 可用 | canonical query CLI（A/B/C 策略 + hybrid/vector） |
-| `eval_img.py` | 可用 | 批量跑问题集，输出 per-run JSONL 与 summary |
+| `query_img.py` | 可用 | Query 端（A/B/C 策略 + hybrid/vector） |
 | `embeddings.py` | 可用 | 本地 Qwen3 embedding（SentenceTransformer） |
 | `chunkings.py` | 可用 | 自研 recursive/semantic chunking（ingest 未复用） |
 | `a1_vector_store.py` | 示例 | Chroma 基础用法 |
 | `chats.py` | 示例 | DeepSeek LLM 初始化 |
 | `pdf_parser.ipynb` | 探索中 | opendataloader-pdf 试验 |
-| `core/indexing_img.py` | 空文件 | 占位，非入口；主入口是 `rag_langchain.ingest_img` |
+| `core/indexing_img.py` | 空文件 | 占位，未实现 |
 
 ### 2.2 `ingest_img.py` 已实现的能力
 
@@ -90,7 +88,7 @@ PDF (opendataloader-pdf)
   → 小图 bbox 过滤
   → VLM caption（带 before/after 上下文）
   → 生成 4 种 chunk 产物 + image_captions.jsonl
-  → 可选写入 4 个 Chroma collection
+  → 可选写入 3 个 Chroma collection
 ```
 
 产物对照 notes.md 实验组：
@@ -106,20 +104,9 @@ PDF (opendataloader-pdf)
 ### 2.3 依赖与运行前提
 
 - Java 11+（opendataloader-pdf）
-- DashScope API key（默认 VLM caption：`qwen-vl-max`）；DeepSeek API key 用于 query answer LLM
+- DeepSeek API key（VLM caption，支持 vision 的模型）
 - 本地 embedding 模型路径（`QWEN3_EMBEDDING_06B_PATH`）
-- Ingest 入口：`uv run -m rag_langchain.ingest_img`
-- Query 入口：`uv run -m rag_langchain.query_img`
-
-常用命令：
-
-```bash
-# ingest
-uv run -m rag_langchain.ingest_img tmp/raws/foo.pdf --out tmp/outs/foo --build-chroma
-
-# query
-uv run -m rag_langchain.query_img --index tmp/outs/foo --strategy separate --show-evidence "question"
-```
+- 运行方式：`uv run -m rag_langchain.ingest_img`（注意：docstring 里写的 `index_img` 与文件名不一致，需统一）
 
 ---
 
@@ -153,7 +140,7 @@ filter（规则 + 可选轻量分类）→ caption（一次 VLM，prompt 已含 
 
 过滤的目的：不对 logo、装饰图、过小图、极端长宽比、不支持格式做昂贵 VLM 调用。
 
-当前实现已包含 bbox 面积、小图长宽比、页边小图、噪声关键词、稀疏上下文等 L1/L2 规则；下一步重点是用标注集验证误伤率。
+当前实现只有 `skip_small_images`（bbox 面积阈值），**不够**，但方向对。
 
 #### ✅ inline vs separate 两套 chunk——正确
 
@@ -211,12 +198,12 @@ flowchart TD
 | 项 | 优先级 | 说明 |
 |----|--------|------|
 | 阅读顺序可靠性 | P1 | 验证 flatten 遍历顺序是否与页面视觉顺序一致；必要时按 `(page, bbox.y, bbox.x)` 重排 |
-| Section title 注入 | ✅ | caption prompt 已注入 section title；无 heading 页仍可继续做启发式补锚点 |
+| Section title 注入 | P1 | notes.md 强调 caption 需要 section title；从 heading 元素向上查找最近标题 |
 | 表格元素处理 | P2 | 当前 `TEXT_TYPES` 含 `table cell`，但未结构化；load-bearing 表格可能在 text 流里已有部分信息，避免 caption 与 text chunk 重复 |
 | 多 PDF / doc_id | P2 | 当前按单 PDF 设计；批量 ingest 需要 `doc_id` 字段 |
-| 模块命名统一 | ✅ | canonical 入口为 `rag_langchain.ingest_img` |
+| 模块命名统一 | P3 | `ingest_img` vs `index_img` |
 
-### Phase 1：图片过滤（当前 ~75%）
+### Phase 1：图片过滤（当前 ~40%）
 
 **目标**：在 VLM 调用前去掉噪声图，降低 indexing 成本。
 
@@ -246,7 +233,7 @@ L4 决策
 
 **原则**：过滤宁可 **漏滤**（多 caption 几张装饰图），不可 **误滤**（丢掉含答案的表格截图）。长宽比/噪声词规则均要求「小图」才触发。
 
-### Phase 2：Caption 生成（当前 ~80%）
+### Phase 2：Caption 生成（当前 ~70%）
 
 **目标**：生成"检索友好、可 grounding"的 caption，不是泛泛的看图说话。
 
@@ -260,11 +247,11 @@ L4 决策
 
 | 项 | 优先级 | 说明 |
 |----|--------|------|
-| Section title 加入 prompt | ✅ | 已进入 caption prompt；Backpressure 12/12 有 section title |
+| Section title 加入 prompt | P1 | 显著减少泛化 caption（"a web page with a form"） |
 | 按分类切换 prompt emphasis | P2 | table → 强调行列值；diagram → 强调节点边；screenshot → 强调菜单路径 |
 | Caption 质量校验 | P2 | 长度过短、含 "unclear"/"cannot see" 过多 → 标记低质量，可重试 |
 | 模型选择 | P2 | 确认 `deepseek-v4-flash` 对 vision 的支持；准备 fallback（如 DashScope Qwen-VL） |
-| 批量与断点续跑 | ✅ | `--batch` / `--resume` 已接入；dry-run 会保护真实 caption |
+| 批量与断点续跑 | P1 | 大文档 caption 贵且慢；按 image_id 缓存，支持 `--resume` |
 | 成本追踪 | P3 | 记录每张图 token / 耗时到 summary |
 
 **Caption 质量标准**（用于人工 spot-check）：
@@ -297,24 +284,24 @@ L4 决策
 | 是否复用 `chunkings.py` | P3 | ingest 用 LangChain splitter，chunkings 是自研版；实验期保持一致即可 |
 | 页级合并策略 | P2 | `page_documents_from_units` 按页合并再切；跨页段落会被切断，需评估影响 |
 
-### Phase 4：Embedding 与索引（当前 ~80%）
+### Phase 4：Embedding 与索引（当前 ~60%）
 
 **目标**：同一 embedding 模型，为各实验组建可对比的 vector store。
 
 **已有**：
 - HuggingFaceEmbeddings（Qwen3 0.6B）
-- 4 个 Chroma collection：`text_only` / `inline_caption` / `separate_caption` / `separate_mixed`
+- 3 个 Chroma collection：`text_only` / `inline_caption` / `separate_mixed`
 
 **待完善**：
 
 | 项 | 优先级 | 说明 |
 |----|--------|------|
-| `separate_caption` collection | ✅ | 已构建纯 caption collection；主 query 默认查 `separate_mixed` |
+| 缺 `separate_caption_only` collection | P2 | 分析纯 caption 召回时可单独索引 |
 | Metadata 一致性 | P1 | 确保所有 chunk 有 `chunk_type`, `source_pdf`, `page`, `chunk_id` |
 | 图片路径可访问性 | P1 | `image_path` 存相对/绝对路径策略；query 时 answer 引用需要能定位原图 |
 | 增量更新 | P3 | 单 PDF 重跑时只更新对应 doc 的 chunk |
 
-### Phase 5：Query / RAG（当前 ~75%——hybrid 检索已通，reranker 暂缓）
+### Phase 5：Query / RAG（当前 ~60%——hybrid 检索已通，reranker 暂缓）
 
 **已有**（2026-06-07，见 [`logs.md`](logs.md) §5–§6）：
 - `query_img.py` 三策略 CLI（text_only / inline / separate）
@@ -355,7 +342,7 @@ L4 决策
 - 区分文本证据 vs 图片证据
 - 引用 `image_id` / `page` 当答案来自 caption chunk
 
-### Phase 6：评估框架（当前 ~35%）
+### Phase 6：评估框架（当前 0%）
 
 按 notes.md 最小实验：
 
@@ -376,13 +363,6 @@ D. separate without context（已有 --no-caption-context）
 - Per-query input tokens
 - Rerank promotion rate
 
-**已有骨架**：
-- `eval_img.py` 读取 JSONL 问题集，遍历 `text_only / inline / separate`、`hybrid / vector`、多组 `alpha`
-- `--retrieve-only` 可不调用 LLM，只评估 evidence
-- 输出 `image_evidence_count`（独立 image_caption）、`inline_image_mention_count`（inline chunk 内嵌图）、`context_chars`、`gold_image_hit`、`gold_chunk_hit`
-- hybrid eval 优先复用 Chroma 已存 embedding，避免每个问题重新 embed 全语料
-- 样例问题集：`rag_langchain/eval_questions.sample.jsonl`
-
 ---
 
 ## 5. `ingest_img.py` 具体问题清单
@@ -391,26 +371,26 @@ D. separate without context（已有 --no-caption-context）
 
 ### P0 — 阻塞实验
 
-1. ~~无 query 端~~：`query_img.py` 已支持 text_only / inline / separate
-2. ~~模块名不一致~~：canonical CLI 已统一为 `rag_langchain.ingest_img`
-3. ~~Vision 模型待验证~~：Backpressure / HermesX 已用 DashScope `qwen-vl-max` 跑过真实 caption
+1. **无 query 端**：目前只能 ingest，无法跑完整 RAG 对比实验
+2. **模块名不一致**：docstring 写 `index_img`，文件是 `ingest_img.py`
+3. **Vision 模型待验证**：需用真实 PDF 跑一张图确认 API 可用
 
 ### P1 — 影响质量
 
-4. **过滤仍需评估误伤率**：L1/L2 已实现，但缺标注集验证
-5. ~~缺 section title~~：caption prompt 已注入 section title；无 heading 页仍可继续增强启发式
-6. ~~无 caption 缓存/断点续跑~~：`--resume` / `--dry-run` 已复用真实 caption 缓存
+4. **过滤太弱**：仅 bbox 面积，logo/装饰图仍会消耗 VLM
+5. **缺 section title**：caption 容易泛化
+6. **无 caption 缓存/断点续跑**：大文档重跑成本高
 7. **阅读顺序未验证**：flatten 顺序是否等于真实阅读顺序
 
 ### P2 — 优化体验
 
 8. **separate caption 检索文本可增强**：纯 caption 可能缺少页码/章节锚点
-9. ~~skipped images 无记录~~：已输出 `skipped_images.jsonl`
-10. **`a1_vector_store.py` 中 `as_retriever` 引用未导入的 `OpenAIEmbeddings`**：与主线无关；主 query 示例以 `query_img.py` 为准
+9. **skipped images 无记录**：过滤掉的图应输出日志/jsonl 便于审计
+10. **`a1_vector_store.py` 中 `as_retriever` 引用未导入的 `OpenAIEmbeddings`**：与本项目无关但说明 query 示例需重写
 
 ### P3 — 工程化
 
-11. **`core/indexing_img.py` 空文件**：保留为占位或后续迁移目标；不要作为当前入口
+11. **`core/indexing_img.py` 空文件**：明确是废弃还是迁移目标
 12. **`chunkings.py` 与 ingest 未整合**：非阻塞，实验期保持现状
 13. **多 PDF 批处理 CLI**
 
@@ -424,10 +404,10 @@ D. separate without context（已有 --no-caption-context）
 目标：一份 PDF → ingest → query → 肉眼看答案
 ```
 
-- [x] 统一 canonical ingest 入口为 `rag_langchain.ingest_img`
-- [x] 用 `--dry-run` 验证 parse + chunk 逻辑
-- [x] 用 `--build-chroma` 验证 embedding / Chroma
-- [x] 建立 `query_img.py`：Chroma/hybrid retrieve → DeepSeek 生成
+- [ ] 统一模块名为 `ingest_img`
+- [ ] 用 `--dry-run` 验证 parse + chunk 逻辑
+- [ ] 用 1 张图 `--build-chroma` 验证 embedding
+- [ ] 新建最简 `query.py`：Chroma retrieve → DeepSeek 生成
 
 ### Milestone 2：提升 ingest 质量（2-3 天）
 
@@ -435,9 +415,9 @@ D. separate without context（已有 --no-caption-context）
 目标：caption 从"能看"到"能检索"
 ```
 
-- [x] 加 section title 到 caption prompt
-- [x] 加 L1/L2 规则过滤 + `skipped_images.jsonl`
-- [x] caption 缓存（`image_captions.jsonl` 存在则跳过）
+- [ ] 加 section title 到 caption prompt
+- [ ] 加 L1/L2 规则过滤 + `skipped_images.jsonl` — ✅ 见 `pdf_filter.py`
+- [ ] caption 缓存（`image_captions.jsonl` 存在则跳过）
 - [ ] 验证阅读顺序
 
 ### Milestone 3：实验对比（3-5 天）
@@ -446,8 +426,8 @@ D. separate without context（已有 --no-caption-context）
 目标：定量回答 inline vs separate
 ```
 
-- [ ] 准备 3-5 份 PDF + 标注问题集（已有 sample schema）
-- [x] 跑 A/B/C 基础矩阵的 CLI 骨架：`eval_img.py`
+- [ ] 准备 3-5 份 PDF + 标注问题集
+- [ ] 跑 A/B/C/D 四套索引
 - [ ] 加 reranker 到 query — **暂缓**；已用 hybrid BM25+vector 替代（见 `hybrid_retrieve.py`）
 - [ ] 记录 recall@k、token 成本、答案质量
 
@@ -475,7 +455,7 @@ D. separate without context（已有 --no-caption-context）
 
 ## 8. 一句话总结
 
-> **ingest 的核心不是"给每张图写一段描述"，而是：用 surrounding text 把图读成可检索的文本证据，并以独立 chunk（separate）而非无条件塞回正文（inline）的方式进入索引；当前 ingest/query/hybrid 骨架已经跑通，下一步最重要的是补标注问题集、调 hybrid alpha，并按 notes.md 跑 A/B/C/D 定量对比。**
+> **ingest 的核心不是"给每张图写一段描述"，而是：用 surrounding text 把图读成可检索的文本证据，并以独立 chunk（separate）而非无条件塞回正文（inline）的方式进入索引；你现在的 `ingest_img.py` 已经搭好了 ingest 骨架，下一步最重要的是补 query 端和过滤/上下文质量，然后按 notes.md 跑 A/B/C 对比实验来验证。**
 
 ---
 

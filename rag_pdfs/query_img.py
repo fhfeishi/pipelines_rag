@@ -29,7 +29,6 @@ from langchain_core.runnables import RunnablePassthrough
 
 from rag_langchain.caption_chunks import CHUNK_TYPE_IMAGE_CAPTION
 from rag_langchain.hybrid_retrieve import (
-    HybridRetriever,
     hybrid_retrieve,
     hybrid_retrieve_with_scores,
     load_corpus,
@@ -66,7 +65,6 @@ def load_vectorstore(
     index_dir: Path,
     strategy: Strategy,
     embedding_model_path: str | None,
-    embeddings: Any | None = None,
 ) -> Chroma:
     collection_name, _ = STRATEGY_COLLECTIONS[strategy]
     persist_dir = index_dir / "chroma" / collection_name
@@ -77,7 +75,7 @@ def load_vectorstore(
         )
     return Chroma(
         persist_directory=str(persist_dir),
-        embedding_function=embeddings or build_embeddings(embedding_model_path),
+        embedding_function=build_embeddings(embedding_model_path),
         collection_name=collection_name,
     )
 
@@ -115,7 +113,6 @@ def retrieve_documents(
     index_dir: Path | None = None,
     strategy: Strategy | None = None,
     embeddings: Any | None = None,
-    hybrid_retriever: HybridRetriever | None = None,
 ) -> list[Document]:
     if retrieval == "vector":
         docs = vectorstore.similarity_search(question, k=fetch_k)
@@ -123,14 +120,6 @@ def retrieve_documents(
 
     if index_dir is None or strategy is None or embeddings is None:
         raise ValueError("hybrid retrieval requires index_dir, strategy, and embeddings")
-
-    if hybrid_retriever is not None:
-        return hybrid_retriever.retrieve(
-            question,
-            alpha=alpha,
-            fetch_k=fetch_k,
-            top_k=final_k,
-        )
 
     corpus = load_corpus(index_dir, strategy, vectorstore)
     return hybrid_retrieve(
@@ -251,7 +240,6 @@ def main() -> None:
         index_dir,
         strategy,
         args.embedding_model_path,
-        embeddings=embeddings,
     )
     if not args.api_key:
         raise RuntimeError("Missing API key. Pass --api-key or set DEEPSEEK_API_KEY.")
