@@ -348,3 +348,38 @@ uv run -m rag_langchain.eval_img \
 | separate / vector | 1.00 | 1.75 | sample 上纯向量召回最高，需扩大标注集确认 |
 
 性能修复：最初 hybrid smoke 因重新 embed 全语料，单 case 约 185s；改为读取 Chroma stored embeddings 后，单 case 检索约 2.2s。
+
+---
+
+## 13. 2026 私有知识问答 Pipelines 文档（2026-06-08）
+
+目标：把“2026 年私有知识问答不应默认盲建向量库”的架构判断整理为独立 Markdown，并核验关键断言。
+
+### 13.1 新增文档
+
+| 文件 | 内容 |
+|------|------|
+| `private_knowledge_qa_2026.md` | 2026 私有知识问答 Pipelines 选型指南：真实性审查、决策模型、六类 pipeline、评估体系、对本项目 image-index RAG 的落地建议 |
+
+### 13.2 关键结论
+
+- RAG 没有退场，但已经从默认答案变成需要按场景选择的工程组件。
+- 小型稳定知识库可优先考虑长上下文 + Prompt Caching。
+- 大规模、频繁更新、强权限审计的非结构化文档仍适合生产级 RAG。
+- 代码库问答更适合 agentic retrieval + grep/read/index 混合搜索。
+- 结构化业务数据应优先走 SQL/API，而不是强行向量化。
+- 技术 PDF 场景应继续围绕 `text_only` / `inline` / `separate image_caption` 做定量评估。
+
+### 13.3 验证
+
+通过：
+
+```bash
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m rag_langchain.ingest_img --help
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m rag_langchain.query_img --help
+```
+
+备注：直接在 PowerShell UNC 路径下运行 `uv run ...` 时，`uv` 创建 `.venv` 的 `lib64` 链接清理失败；改用 WSL 原生路径后通过。
