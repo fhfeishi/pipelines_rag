@@ -1,0 +1,74 @@
+# rag_pdfs Launch Charter
+
+> 模板原文见仓库历史（`strata_example.md`）；本文件为 `rag_pdfs` 的已填写章程。
+
+## 1. 项目一句话
+
+把技术文档 PDF 中的图片（截图 / 表格 / 架构图）在 ingest 阶段读成可检索、可引用的文本证据，让 RAG 能回答 image-helpful / image-required 问题。
+
+## 2. 背景
+
+- 传统 text-only RAG 在 ingest 时丢弃图片，导致答案缺乏可操作性或直接答错。
+- 核心结论（见 `notes.md`）：**Vision at ingestion, text at retrieval** —— VLM 只在 ingest 读图一次生成 caption，query 阶段纯文本检索。
+- 已有资产：完整 ingest / query / eval CLI、L1/L2 图片过滤、hybrid BM25+vector 检索、两份真实 PDF 的 caption 与 Chroma 索引。
+- 2026-06-10 起本目录为 canonical 包（`rag_langchain/` 为历史探索材料）。
+
+## 3. 核心目标
+
+1. 维持端到端闭环：PDF → parse → filter → caption → chunk → Chroma → query。
+2. 用标注问题集定量回答 inline vs separate caption 索引策略（notes.md 实验 A/B/C/D）。
+3. caption 质量可度量：section 锚点覆盖率、quality_flag、recall@k。
+4. 所有行为变化沉淀进 `plan.md` / `logs.md`。
+
+## 4. 非目标
+
+- 不做 query 阶段多模态（图片不进 query payload；E 组仅作上限对照）。
+- 不用 CLIP 图像向量作主路径。
+- 暂不做生产部署 / API 服务化、cross-encoder reranker（hybrid 已替代）。
+
+## 5. 成功标准
+
+- `uv run -m rag_pdfs.{ingest_img,query_img,eval_img} --help` 可运行。
+- 单 PDF ingest 产出 4 种 chunk JSONL + `image_captions.jsonl` + Chroma collection。
+- `eval_img` 在标注问题集上输出 gold image/chunk recall@k 与 evidence 统计。
+- 行为变化均有 `logs.md` 追加记录与最小验证命令。
+
+## 6. 系统流程
+
+```text
+PDF
+-> opendataloader-pdf 解析（layout JSON + PNG）
+-> LayoutElement 序列（阅读顺序 / section title）
+-> L1/L2 图片过滤（skip 写 skipped_images.jsonl）
+-> VLM caption（带上下文，缓存到 image_captions.jsonl，quality_flag 校验）
+-> text_only / inline / separate / mixed 四种 chunk
+-> Qwen3 embedding + Chroma（4 collection）
+-> query：hybrid BM25+vector 检索 -> DeepSeek 生成（区分 text/image 证据）
+-> eval：策略 × 检索 × alpha 矩阵，recall@k 与 evidence 指标
+```
+
+## 7. 主要入口
+
+```bash
+uv run -m rag_pdfs.ingest_img tmp/raws/foo.pdf --out tmp/outs/foo --build-chroma
+uv run -m rag_pdfs.query_img --index tmp/outs/foo --strategy separate --show-evidence "question"
+uv run -m rag_pdfs.eval_img --questions rag_pdfs/eval_questions.sample.jsonl --retrieve-only
+```
+
+核心依赖：Java 11+（opendataloader-pdf）、DashScope key（qwen-vl-max caption）、DeepSeek key（answer LLM）、本地 Qwen3 embedding（`QWEN3_EMBEDDING_06B_PATH`）。
+
+## 8. 文档契约
+
+| 文件 | 职责 |
+|------|------|
+| `plan.md` | 技术路线、阶段状态、待办优先级、设计决策 |
+| `logs.md` | 追加式运行记录（真实命令、结果、修复、决策） |
+| `notes.md` | 背景研究与实验设计（博客结论、A/B/C 方案） |
+| `strata.md` | 本章程：为什么存在、流程、成功标准 |
+| 仓库根 `AGENTS.md` | 跨项目 agent 规则（transcript + rag_pdfs） |
+| 仓库根 `git_notes.md` | git 历史问题与恢复记录 |
+
+## 9. 当前阶段与下一步
+
+- 当前阶段：ingest / query / hybrid / eval 骨架全部跑通，2 份真实 PDF 已索引。
+- 下一步：标注问题集（text-only / image-helpful / image-required）→ `eval_img` 定量 A/B/C/D → hybrid alpha 调参 → 阅读顺序验证。

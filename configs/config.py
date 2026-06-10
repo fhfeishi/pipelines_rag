@@ -8,10 +8,9 @@ ENV_FILE = CONFIG_DIR / ".env"
 
 
 class Settings(BaseSettings):
-    dashscope_api_key: str = Field(default="", description="DashScope API key")
-    deepseek_api_key: str = Field(default="", description="DeepSeek API key for polish step")
-    polish_model: str = Field(default="deepseek-chat", description="LLM model for transcript polish")
-    polish_base_url: str = Field(default="https://api.deepseek.com", description="OpenAI-compatible polish API base URL")
+    dashscope_api_key: str = Field(default="", description="DashScope API key (VLM captioning via compatible-mode)")
+    deepseek_api_key: str = Field(default="", description="DeepSeek API key (query/eval LLM, optional caption backend)")
+    qwen3_embedding_06b_path: str = Field(default="", description="Local Qwen3 embedding 0.6B model path (rag_pdfs)")
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE if ENV_FILE.exists() else None,
