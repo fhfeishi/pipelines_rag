@@ -1,33 +1,24 @@
-# configs/config.py   # wsl侧不适用。
 from pathlib import Path
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 CONFIG_DIR = Path(__file__).resolve().parent
 ENV_FILE = CONFIG_DIR / ".env"
-assert ENV_FILE.exists(), "Environment file not found"
+
 
 class Settings(BaseSettings):
-    deepseek_api_key: str=Field(default='', description="DeepSeek API key")
-    dashscope_api_key: str=Field(default='', description="DashScope API key")
-    qwen3_embedding_06b_path: str=Field(default='', description="Qwen3 embedding 0.6B path")
+    dashscope_api_key: str = Field(default="", description="DashScope API key")
+    deepseek_api_key: str = Field(default="", description="DeepSeek API key for polish step")
+    polish_model: str = Field(default="deepseek-chat", description="LLM model for transcript polish")
+    polish_base_url: str = Field(default="https://api.deepseek.com", description="OpenAI-compatible polish API base URL")
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE,
+        env_file=ENV_FILE if ENV_FILE.exists() else None,
         env_file_encoding="utf-8",
         extra="ignore",
-        case_sensitive=False
+        case_sensitive=False,
     )
 
 
 settings = Settings()
-
-
-
-
-
-if __name__ == "__main__":
-    print(f"{settings.deepseek_api_key = }")
-    print(f"{settings.dashscope_api_key = }")
-    print(f"{settings.qwen3_embedding_06b_path = }")
