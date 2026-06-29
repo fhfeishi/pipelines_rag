@@ -9,6 +9,10 @@ tmp/
 logs/
 logs_dir/
 
+# 中间文件
+inputs/
+outputs/
+
 # C extensions
 *.so
 
