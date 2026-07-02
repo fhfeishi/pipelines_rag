@@ -454,3 +454,120 @@ uv run -m rag_pdfs.ingest_img tmp/raws/BackpressureIsAllYouNeed.pdf \
 ### 13.6 下一步
 
 沿用 §9：标注问题集 → `eval_img` 定量 A/B/C/D → hybrid alpha 调参；另可选 `--skip-parse` 重跑 HermesX caption 以更新 section_title/相对路径 metadata。
+
+---
+
+## 14. Roadmap 对齐与解析 Markdown Tool 优先级（2026-07-02）
+
+目标：结合根目录 `agent_rag_growth_roadmap.md`，把 `pipelines_rag` 从单纯图片 RAG 实验重新表述为 Agentic RAG 产品原型，并把当前优先级调整为“数据/PDF 解析到图文编排 Markdown”的工具层。
+
+### 14.1 文档调整
+
+| 文件 | 调整 |
+|------|------|
+| `strata.md` | 根启动文档继续做薄路由，补充 parser/tooling 入口和当前 focus |
+| `AGENTS.md` | 增加产品线/原理线背景、parser 工具箱读序、redox 输出契约和当前优先级 |
+| `CLAUDE.md` | 保持 shim，补充应读 `rag_pdfs/strata.md`、roadmap、`parsers/plan.md` |
+| `rag_pdfs/strata.md` | 将 roadmap 的产品原型定位并入 launch charter，新增解析中间层目标 |
+| `rag_pdfs/plan.md` | 新增“解析到图文 Markdown Tool”当前优先级与 Milestone 1.5 |
+| `parsers/plan.md` | 明确 redox 文档解析工具的输出目录和 `document.md` 契约 |
+
+### 14.2 当前结构决策
+
+- 稳定项目定位放在 `rag_pdfs/strata.md`。
+- Agent 执行规则放在根 `AGENTS.md`。
+- `CLAUDE.md` 不维护独立 workflow，只指向 canonical 文档。
+- `parsers/redox_*` 作为解析工具箱，先承接 PDF / layout JSON / images / image-aware Markdown。
+- `rag_pdfs` 继续负责 caption、chunk、Chroma、query、eval；解析 Markdown 是进入 RAG 之前的可检查桥梁。
+
+### 14.3 下一步
+
+已实现 `parsers.redox_opendataloaderpdf` 的 `document.md` 导出第一版：按阅读顺序输出文本和图片块，图片使用相对路径，并保留 page / bbox / source metadata。下一步是统一默认输出目录到 `outputs/<source-stem>/opendataloader_pdf/`，再评估 `flat` vs `bbox` 阅读顺序。
+
+### 14.4 验证
+
+Doc-only 更新，未改 pipeline 行为。通过：
+本节随后补了 parser 行为变化：`redox_opendataloaderpdf` 现在会额外输出 `document.md`，并在 `parse_summary.json` 中记录 `document_md`。
+
+通过：
+
+```bash
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m rag_pdfs.ingest_img --help
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.redox_opendataloaderpdf --help
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run python -m compileall parsers/redox_opendataloaderpdf.py
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag bash -lc \
+  'rm -rf tmp/codex_parser_smoke && mkdir -p tmp/codex_parser_smoke/images && \
+   cp tmp/outs/BackpressureIsAllYouNeed/BackpressureIsAllYouNeed.json tmp/codex_parser_smoke/ && \
+   cp -r tmp/outs/BackpressureIsAllYouNeed/images/. tmp/codex_parser_smoke/images/ && \
+   : > tmp/codex_parser_smoke/source.pdf && \
+   /home/baheas/.local/bin/uv run -m parsers.redox_opendataloaderpdf \
+     tmp/codex_parser_smoke/source.pdf --out tmp/codex_parser_smoke --skip-parse --quiet'
+```
+
+Smoke 结果：154 个元素、137 个文本元素、13 个图片元素；生成 `document.md`、`elements.jsonl`、`images.jsonl`、`parse_summary.json`，Markdown 中图片路径为 `images/imageFileN.png` 相对路径。
+
+---
+
+## 15. parsers 静态结构化总入口（2026-07-02）
+
+目标：把文档、网页、音视频、文本等来源先统一当作静态信息处理，并为后续持续试用各类解析工具提供一个轻量调度入口。
+
+### 15.1 新增/调整
+
+| 文件 | 调整 |
+|------|------|
+| `parsers/static_structurer.py` | 新增汇总入口：检测 `pdf/webpage/media/text`，选择 backend，输出到 `outputs/<source-stem>/`，写 `static_parse_manifest.json` |
+| `parsers/static_structurer_notes.md` | 新增总入口使用笔记，记录边界、默认工具和经验沉淀位置 |
+| `parsers/redox_opendataloaderpdf.py` | 默认输出改为 `outputs/<source-stem>/opendataloader_pdf/`；默认复制输入 PDF 为同级 `source.pdf`；保留 `--out` 和新增 `--no-copy-source` |
+| `parsers/plan.md` | 记录 `static_structurer.py` 命名、registry、输出包契约 |
+
+总入口命名选择 `static_structurer.py`：覆盖“静态解析 / 静态结构化 / 静态重构”的含义，同时避免和具体 parser backend 混淆。当前不处理动态视频画面理解；音视频先走抽音频 + ASR 的静态文本化路径。
+
+### 15.2 当前 registry
+
+| kind | 默认 tool | 下游 |
+|------|-----------|------|
+| `pdf` | `opendataloader_pdf` | `parsers.redox_opendataloaderpdf` |
+| `webpage` | `crawl4ai` | `parsers.rewebpage_craw` |
+| `media` | `dashscope_asr` | `parsers.reaudio_dashscope` |
+| `text` | `copy_text` | builtin copy + `document.md` |
+
+Firecrawl 可通过 `--tool firecrawl` 显式选择。
+
+### 15.3 验证
+
+通过：
+
+```bash
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run python -m compileall \
+  parsers/static_structurer.py parsers/redox_opendataloaderpdf.py
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer --help
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer --list-tools
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer README.md --stem smoke_static_readme
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer \
+  tmp/raws/example.pdf --kind pdf --dry-run -- --skip-parse
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer \
+  "https://example.com/article" --kind webpage --dry-run --parse-page-pdf
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m rag_pdfs.ingest_img --help
+```
+
+备注：首次并发 smoke 时遇到一次 WSL 服务层 `Wsl/Service/0x8007274c`，单独重跑同命令通过。

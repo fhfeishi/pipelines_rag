@@ -4,10 +4,14 @@
 
     outputs/webpages/<page-slug>/page.pdf
 
+默认输出到 `outputs/<source-stem>/opendataloader_pdf/`，并在同级目录保留
+`source.pdf`。如果输入是网页快照目录中的 `page.pdf`，`source-stem` 会优先取
+父目录名，而不是泛化的 `page`。
+
 用法：
-    python -m parsers.script_oppdf
-    python -m parsers.script_oppdf outputs/webpages/qwen.ai_blog_id_qwen-agentworld/page.pdf
-    python -m parsers.script_oppdf outputs/webpages/qwen.ai_blog_id_qwen-agentworld/
+    python -m parsers.redox_opendataloaderpdf
+    python -m parsers.redox_opendataloaderpdf outputs/webpages/qwen.ai_blog_id_qwen-agentworld/page.pdf
+    python -m parsers.redox_opendataloaderpdf outputs/webpages/qwen.ai_blog_id_qwen-agentworld/
 """
 
 from __future__ import annotations
@@ -20,7 +24,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from rag_pdfs.pdf_layout import is_image, is_text, reorder_elements_by_bbox
+from rag_pdfs.pdf_layout import (
+    clean_text,
+    is_caption_element,
+    is_heading,
+    is_image,
+    is_text,
+    reorder_elements_by_bbox,
+)
 from rag_pdfs.pdf_parser import (
     load_elements,
     path_for_storage,
@@ -49,7 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out",
         type=Path,
-        help="解析输出目录；默认写到 PDF 同级目录的 opendataloader_pdf/。",
+        help="解析输出目录；默认写到 outputs/<source-stem>/opendataloader_pdf/。",
+    )
+    parser.add_argument(
+        "--no-copy-source",
+        action="store_true",
+        help="不把输入 PDF 复制为输出包中的 source.pdf。",
     )
     parser.add_argument(
         "--skip-parse",
@@ -95,6 +111,24 @@ def resolve_pdf_arg(value: Path | None) -> Path:
     if path.suffix.lower() != ".pdf":
         raise ValueError(f"输入必须是 PDF 或含 page.pdf 的目录：{path}")
     return path
+
+
+def default_source_stem(pdf_path: Path) -> str:
+    if pdf_path.name == "page.pdf" and pdf_path.parent.name:
+        return pdf_path.parent.name
+    return pdf_path.stem
+
+
+def default_out_dir(pdf_path: Path) -> Path:
+    return REPO_ROOT / "outputs" / default_source_stem(pdf_path) / "opendataloader_pdf"
+
+
+def preserve_source_pdf(pdf_path: Path, out_dir: Path) -> str:
+    source_path = out_dir.parent / "source.pdf"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    if pdf_path.resolve() != source_path.resolve():
+        shutil.copy2(pdf_path, source_path)
+    return path_for_storage(source_path, out_dir)
 
 
 def find_existing_opendataloader_json(out_dir: Path) -> Path:
@@ -172,7 +206,91 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def export_elements(json_path: Path, out_dir: Path, image_dir: Path, *, reading_order: str) -> dict[str, Any]:
+def markdown_image_alt(element: Any) -> str:
+    page = f" page {element.page}" if element.page is not None else ""
+    return f"image {element.index}{page}".strip()
+
+
+def markdown_metadata_line(element: Any, image_path: str = "") -> str:
+    parts = [
+        f"element_index={element.index}",
+        f"type={element.type or '<empty>'}",
+    ]
+    if element.page is not None:
+        parts.append(f"page={element.page}")
+    if element.bbox:
+        parts.append(f"bbox={json.dumps(as_jsonable(element.bbox), ensure_ascii=False)}")
+    if element.source:
+        parts.append(f"source={element.source}")
+    if image_path:
+        parts.append(f"path={image_path}")
+    return "<!-- " + " | ".join(parts) + " -->"
+
+
+def markdown_for_text(element: Any) -> str:
+    text = clean_text(element.content)
+    if not text:
+        return ""
+    if is_heading(element):
+        return f"## {text}"
+    if is_caption_element(element):
+        return f"*{text}*"
+    return text
+
+
+def write_image_aware_markdown(
+    path: Path,
+    *,
+    pdf_path: Path,
+    json_path: Path,
+    out_dir: Path,
+    image_dir: Path,
+    elements: list[Any],
+    reading_order: str,
+) -> None:
+    lines: list[str] = [
+        f"# {pdf_path.stem}",
+        "",
+        f"- Source PDF: `{pdf_path}`",
+        f"- Layout JSON: `{path_for_storage(json_path, out_dir)}`",
+        f"- Reading order: `{reading_order}`",
+        "",
+    ]
+
+    previous_page: int | None = None
+    for element in elements:
+        if element.page is not None and element.page != previous_page:
+            lines.extend(["", "---", "", f"## Page {element.page}", ""])
+            previous_page = element.page
+
+        if is_text(element):
+            markdown = markdown_for_text(element)
+            if markdown:
+                lines.extend([markdown, ""])
+            continue
+
+        if is_image(element):
+            image_path = resolve_image_path(element.source or "", json_path, image_dir)
+            stored_path = path_for_storage(image_path, out_dir)
+            lines.append(markdown_metadata_line(element, stored_path))
+            if stored_path:
+                image_ref = Path(stored_path).as_posix()
+                lines.append(f"![{markdown_image_alt(element)}]({image_ref})")
+            else:
+                lines.append(f"> Image source could not be resolved: `{element.source}`")
+            lines.append("")
+
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def export_elements(
+    json_path: Path,
+    out_dir: Path,
+    image_dir: Path,
+    *,
+    reading_order: str,
+    pdf_path: Path,
+) -> dict[str, Any]:
     elements = load_elements(json_path)
     if reading_order == "bbox":
         elements = reorder_elements_by_bbox(elements)
@@ -209,12 +327,23 @@ def export_elements(json_path: Path, out_dir: Path, image_dir: Path, *, reading_
 
     write_jsonl(out_dir / "elements.jsonl", element_rows)
     write_jsonl(out_dir / "images.jsonl", image_rows)
+    markdown_path = out_dir / "document.md"
+    write_image_aware_markdown(
+        markdown_path,
+        pdf_path=pdf_path,
+        json_path=json_path,
+        out_dir=out_dir,
+        image_dir=image_dir,
+        elements=elements,
+        reading_order=reading_order,
+    )
 
     text_chars = sum(len(element.content) for element in elements if is_text(element))
     return {
         "layout_json": path_for_storage(json_path, out_dir),
         "elements_jsonl": "elements.jsonl",
         "images_jsonl": "images.jsonl",
+        "document_md": "document.md",
         "element_count": len(elements),
         "text_element_count": sum(1 for element in elements if is_text(element)),
         "image_element_count": len(image_rows),
@@ -227,7 +356,7 @@ def export_elements(json_path: Path, out_dir: Path, image_dir: Path, *, reading_
 def main() -> None:
     args = parse_args()
     pdf_path = resolve_pdf_arg(args.pdf)
-    out_dir = (args.out or (pdf_path.parent / "opendataloader_pdf")).expanduser().resolve()
+    out_dir = (args.out or default_out_dir(pdf_path)).expanduser().resolve()
     image_dir = out_dir / "images"
 
     print(f"输入 PDF : {pdf_path}")
@@ -252,6 +381,9 @@ def main() -> None:
 
     summary = {
         "source_pdf": str(pdf_path),
+        "preserved_source_pdf": (
+            None if args.no_copy_source else preserve_source_pdf(pdf_path, out_dir)
+        ),
         "output_dir": str(out_dir),
         "image_dir": path_for_storage(image_dir, out_dir),
         "parsed_at": datetime.now(timezone.utc).isoformat(),
@@ -264,6 +396,7 @@ def main() -> None:
             out_dir,
             image_dir,
             reading_order=args.reading_order,
+            pdf_path=pdf_path,
         )
     )
     (out_dir / "parse_summary.json").write_text(

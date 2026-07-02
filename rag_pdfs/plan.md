@@ -25,6 +25,32 @@ PDF 相关逻辑集中在 `pdf_*`，便于日后替换 parser 或单独废弃实
 
 ---
 
+## 0.1 当前产品优先级：解析到图文 Markdown Tool
+
+`agent_rag_growth_roadmap.md` 将本仓库定位为 Agentic RAG 产品原型。为了让后续 caption、chunk、检索和评估更稳，当前先把解析工具层作为前置优先级：
+
+```text
+source data / webpage snapshot
+-> PDF
+-> opendataloader layout JSON + extracted images
+-> elements.jsonl / images.jsonl
+-> image-aware Markdown
+-> rag_pdfs ingest / caption / chunk / eval
+```
+
+目标不是马上改 query 端，而是先形成一个人能检查的中间产物：Markdown 中的文本、图片位置、页码、bbox、相对图片路径都清楚。这样阅读顺序、图片漏抽、图文错位等问题可以在 VLM caption 之前发现。
+
+当前工具入口在 `parsers/redox_opendataloaderpdf.py`；稳定后再决定是否把 Markdown 导出能力下沉到 `rag_pdfs.pdf_parser` 或保留在 `parsers/redox_*` 工具箱。
+
+最小完成标准：
+
+- 单个 PDF 可输出 layout JSON、`elements.jsonl`、`images.jsonl`、`parse_summary.json` 和 `document.md`。
+- `document.md` 使用相对图片路径，并在图片附近保留 page / bbox / image source。
+- 输出目录遵循 `outputs/<source-stem>/opendataloader_pdf/` 或显式 `--out`。
+- `rag_pdfs.ingest_img --help` 仍可运行；行为变化需追加 `logs.md`。
+
+---
+
 ## 1. 问题定义
 
 ### 1.1 核心挑战
@@ -430,6 +456,19 @@ D. separate without context（已有 --no-caption-context）
 - [x] 用 `--dry-run` 验证 parse + chunk 逻辑
 - [x] 用 `--build-chroma` 验证 embedding / Chroma
 - [x] 建立 `query_img.py`：Chroma/hybrid retrieve → DeepSeek 生成
+
+### Milestone 1.5：解析到图文 Markdown 工具（当前优先）
+
+```
+目标：一份 PDF -> layout JSON / images / elements.jsonl / images.jsonl -> document.md
+```
+
+- [x] 初版 opendataloader parser wrapper：`parsers/redox_opendataloaderpdf.py`
+- [x] 输出元素清单：`elements.jsonl`
+- [x] 输出图片清单：`images.jsonl`
+- [x] 生成稳定的图文编排 Markdown：`document.md`
+- [ ] 统一默认输出目录到 `outputs/<source-stem>/opendataloader_pdf/`
+- [x] 在 Markdown 图片块中保留 page / bbox / source metadata
 
 ### Milestone 2：提升 ingest 质量（2-3 天）
 

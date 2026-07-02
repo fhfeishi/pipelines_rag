@@ -125,6 +125,28 @@ Bilibili 经常需要登录态 cookie；脚本已经支持两种方式：
 .venv/bin/python -m parsers.reaudio_dashscope video.mp4 --no-polish
 ```
 
+### Dry-run：只检查接口和计划，不消耗 API
+
+用于先验证本地文件、依赖、输出路径和 DashScope key 状态：
+
+```bash
+.venv/bin/python -m parsers.reaudio_dashscope \
+  /mnt/e/static_docs/sources/proxy-tun.m4a \
+  --output-dir outputs/static_docs/proxy-tun/reaudio_dashscope \
+  --formats md,json,srt \
+  --max-seconds 30 \
+  --no-polish \
+  --dry-run
+```
+
+`--dry-run` 不会执行 ffmpeg、不会下载 URL、不会调用 DashScope ASR/LLM，也不会写输出文件。它会打印 JSON plan，包括：
+
+- 输入文件是否存在、大小、解析后的路径。
+- 将要写出的 `md/json/srt/txt` 路径。
+- pipeline 步骤、`max_seconds`、语言提示、缓存策略。
+- `ffmpeg` / `yt-dlp` 可执行文件位置。
+- `DASHSCOPE_API_KEY` 是否可用。
+
 ### 输出格式
 
 默认：
@@ -269,6 +291,75 @@ Bilibili URL smoke test：
 
 结果：当前网络/站点状态下，Bilibili 返回 HTTP 412。已自动加 referer，但仍需要 `--cookies` 或 `--cookies-from-browser`。
 
+## `/mnt/e/static_docs` 本地音视频接口 smoke（2026-07-02）
+
+目标：先跑通 `reaudio_dashscope.py` 的命令行接口、输入识别和输出规划，不批量转写、不消耗 DashScope 额度。
+
+环境检查：
+
+| dependency | result |
+|------------|--------|
+| `ffmpeg` | `/usr/bin/ffmpeg` |
+| `DASHSCOPE_API_KEY` | 当前 dry-run 显示不可用 |
+
+### m4a dry-run
+
+输入：
+
+```text
+/mnt/e/static_docs/sources/proxy-tun.m4a
+```
+
+命令：
+
+```bash
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.reaudio_dashscope \
+  /mnt/e/static_docs/sources/proxy-tun.m4a \
+  --output-dir outputs/static_docs/proxy-tun/reaudio_dashscope \
+  --formats md,json,srt \
+  --max-seconds 30 \
+  --no-polish \
+  --dry-run
+```
+
+结果：通过。识别为本地文件，大小 `3135933` bytes，规划输出：
+
+```text
+outputs/static_docs/proxy-tun/reaudio_dashscope/proxy-tun.md
+outputs/static_docs/proxy-tun/reaudio_dashscope/proxy-tun.json
+outputs/static_docs/proxy-tun/reaudio_dashscope/proxy-tun.srt
+```
+
+### mp4 dry-run
+
+输入：
+
+```text
+/mnt/e/static_docs/sources/rag-or-not.mp4
+```
+
+命令：
+
+```bash
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.reaudio_dashscope \
+  /mnt/e/static_docs/sources/rag-or-not.mp4 \
+  --output-dir outputs/static_docs/rag-or-not/reaudio_dashscope \
+  --formats md,json \
+  --max-seconds 15 \
+  --no-polish \
+  --dry-run
+```
+
+结果：通过。识别为本地文件，大小 `13331564` bytes，规划为 `ffmpeg -> 16 kHz mono wav -> DashScope ASR -> write md/json`。
+
+### 当前结论
+
+- `reaudio_dashscope.py --dry-run` 可作为默认接口 smoke，不消耗 API。
+- 当前机器缺少 `DASHSCOPE_API_KEY`，真实 ASR 需要先在环境变量或 `configs/.env` 中配置 `dashscope_api_key`。
+- 有 key 后建议先跑 `--max-seconds 30 --no-polish`，确认 ASR 输出结构；再打开 polish。
+
 ## 常见问题
 
 ### zsh 报 `no matches found`
@@ -329,7 +420,7 @@ P1 / 工程体验：
 
 - URL cache 命中时跳过下载：当前为了拿标题/stem 会先下载，后续可先用 URL 生成 cache key，命中后直接写输出。
 - 增加 `--download-only` / `--extract-audio-only`，方便调试下载与音频抽取，不调用 DashScope。
-- 增加 `--dry-run`，打印解析计划、依赖检查、输出路径、是否会命中 cache。
+- ~~增加 `--dry-run`，打印解析计划、依赖检查、输出路径、是否会命中 cache。~~ 第一版已加：当前显示 cache 策略但不计算真实 cache key，避免 dry-run 对本地大文件做 hash 或下载 URL。
 - 将默认输出目录从通用 `outputs/` 调整为 `outputs/reaudio/`，避免和网页/PDF parser 产物混在一起。
 - 对超长音频增加切片 ASR，避免单次请求大小或时长限制。
 

@@ -89,6 +89,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-seconds", type=float, default=None, help="Only process the first N seconds.")
     parser.add_argument("--no-cache", action="store_true", help="Disable the ASR cache.")
     parser.add_argument("--force", action="store_true", help="Ignore the ASR cache and transcribe again.")
+    parser.add_argument("--dry-run", action="store_true", help="Print the planned pipeline without ffmpeg/ASR/LLM calls.")
     parser.add_argument("--keep-wav", action="store_true", help="Keep normalized 16 kHz WAV beside outputs.")
     parser.add_argument("--keep-source-media", action="store_true", help="Keep URL-downloaded source audio/video beside outputs.")
     parser.add_argument("--download-dir", default=None, help="Directory for kept URL downloads. Defaults to <output-dir>/media.")
@@ -110,9 +111,19 @@ def run(args: argparse.Namespace) -> None:
     check_binary("ffmpeg")
 
     out_dir = Path(args.output_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
     formats = parse_formats(args.formats)
     language_hints = [item.strip() for item in args.language_hints.split(",") if item.strip()]
+
+    if args.dry_run:
+        print_dry_run_plan(
+            args,
+            out_dir=out_dir,
+            formats=formats,
+            language_hints=language_hints,
+        )
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="reaudio_dashscope_") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
@@ -185,6 +196,84 @@ def resolve_input(args: argparse.Namespace, *, out_dir: Path, temp_dir: Path) ->
         source_note=f"local file: {input_path}",
         metadata={"path": str(input_path), "size_bytes": input_path.stat().st_size},
     )
+
+
+def print_dry_run_plan(
+    args: argparse.Namespace,
+    *,
+    out_dir: Path,
+    formats: set[str],
+    language_hints: list[str],
+) -> None:
+    raw_input = str(args.input)
+    source: dict[str, Any]
+    if is_url(raw_input):
+        yt_dlp_command = resolve_yt_dlp_command(args.yt_dlp_binary)
+        parsed = urlparse(raw_input)
+        stem = sanitize_stem(Path(parsed.path).stem or parsed.netloc or "media")
+        source = {
+            "kind": "url",
+            "original": raw_input,
+            "yt_dlp_command": yt_dlp_command,
+            "will_download": True,
+            "download_dir": str(
+                Path(args.download_dir).expanduser().resolve()
+                if args.download_dir
+                else out_dir / "media"
+            ),
+        }
+    else:
+        input_path = Path(raw_input).expanduser().resolve()
+        if not input_path.exists():
+            raise ReaudioDashScopeError(f"Input file does not exist: {input_path}")
+        stem = sanitize_stem(input_path.stem)
+        source = {
+            "kind": "file",
+            "original": raw_input,
+            "resolved_path": str(input_path),
+            "size_bytes": input_path.stat().st_size,
+        }
+
+    outputs = {
+        fmt: str(out_dir / f"{stem}.{fmt}")
+        for fmt in sorted(formats)
+        if fmt in {"json", "md", "srt", "txt"}
+    }
+    if args.keep_wav:
+        outputs["wav"] = str(out_dir / f"{stem}.16k.wav")
+
+    plan = {
+        "dry_run": True,
+        "source": source,
+        "output_dir": str(out_dir),
+        "stem": stem,
+        "formats": sorted(formats),
+        "outputs": outputs,
+        "pipeline": [
+            "resolve input",
+            "ffmpeg -> 16 kHz mono wav",
+            f"DashScope ASR: {args.asr_model}",
+            "optional DashScope polish" if not args.no_polish else "skip polish",
+            "write requested formats",
+        ],
+        "max_seconds": args.max_seconds,
+        "language_hints": language_hints or ["zh", "en"],
+        "cache": {
+            "enabled": not args.no_cache,
+            "force": bool(args.force),
+            "note": "cache key is computed during real runs",
+        },
+        "dashscope": {
+            "api_key_env": args.api_key_env,
+            "api_key_present": bool(find_api_key(args.api_key_env)),
+            "llm_model": None if args.no_polish else args.llm_model,
+        },
+        "binaries": {
+            "ffmpeg": shutil.which("ffmpeg"),
+            "yt_dlp": resolve_yt_dlp_command(args.yt_dlp_binary) if is_url(raw_input) else None,
+        },
+    }
+    print(json.dumps(plan, ensure_ascii=False, indent=2))
 
 
 def is_url(value: str) -> bool:
@@ -632,16 +721,21 @@ def file_hash(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
 
 
 def read_api_key(api_key_env: str) -> str:
+    api_key = find_api_key(api_key_env)
+    if not api_key:
+        raise ReaudioDashScopeError(
+            f"{api_key_env} is not set. Export it or add dashscope_api_key to configs/.env."
+        )
+    return api_key
+
+
+def find_api_key(api_key_env: str) -> str | None:
     api_key = os.getenv(api_key_env)
     if not api_key:
         env_values = load_env_file(REPO_ROOT / "configs" / ".env")
         api_key = env_values.get(api_key_env) or env_values.get(api_key_env.lower())
         if not api_key and api_key_env in {"DASHSCOPE_API_KEY", "dashscope_api_key"}:
             api_key = env_values.get("DASHSCOPE_API_KEY") or env_values.get("dashscope_api_key")
-    if not api_key:
-        raise ReaudioDashScopeError(
-            f"{api_key_env} is not set. Export it or add dashscope_api_key to configs/.env."
-        )
     return api_key
 
 

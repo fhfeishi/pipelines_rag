@@ -1,5 +1,37 @@
 # Git Notes
 
+## 2026-07-02 Pull recovery: diverged `main` + autostash conflict
+
+Symptom: local `main` and `origin/main` had diverged:
+
+```text
+## main...origin/main [ahead 1, behind 1]
+ M strata.md
+```
+
+Diagnosis:
+
+- Local `main` had one local commit, `25a59cd` (`rm config`).
+- `origin/main` had one remote commit, `4fe67b9` (`add parses`).
+- The worktree also had an uncommitted edit that emptied `strata.md`.
+
+Fix applied:
+
+```bash
+git pull --rebase --autostash origin main
+```
+
+The rebase completed and updated local `main` to match `origin/main`, but
+re-applying the autostash conflicted in `strata.md`: upstream kept the shim and
+added the roadmap link, while the stashed local change deleted the file
+contents. Resolution was to keep the upstream `strata.md` shim, matching the
+documentation contract. The original local deletion remains available in
+`stash@{0}` as the autostash.
+
+Lesson: when pulling with a dirty worktree, `--autostash` protects local edits
+but may still require manual conflict resolution after the pull succeeds. Check
+`git status` and `git stash list` before assuming the worktree is fully clean.
+
 ## 2026-06-10 `git pull` failure: no upstream + local ahead
 
 Symptom: bare `git pull` failed with
