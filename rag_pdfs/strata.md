@@ -72,3 +72,13 @@ uv run -m rag_pdfs.eval_img --questions rag_pdfs/eval_questions.sample.jsonl --r
 
 - 当前阶段：ingest / query / hybrid / eval 骨架全部跑通，2 份真实 PDF 已索引。
 - 下一步：标注问题集（text-only / image-helpful / image-required）→ `eval_img` 定量 A/B/C/D → hybrid alpha 调参 → 阅读顺序验证。
+
+## 10. 产品化与 Agent 成长路线
+
+本项目同时作为 Agentic RAG 产品原型和 agent 工程能力训练场：
+
+- 产品线：把图片 RAG pipeline 推进到可使用、可观察、可评估的产品原型，逐步补齐服务层、UI、trace、token/cost 观测和 eval dashboard。
+- 原理线：围绕 tool calling、ReAct loop、state machine / graph workflow、memory / retrieval、eval / tracing、human-in-the-loop 等主题理解 agent 底层。
+- 工程原则：先把图片 RAG 的 labeled question set、A/B/C/D 实验、recall@k、caption quality 和失败分析做扎实，再进入更复杂的 agent workflow 和产品化界面。
+
+详细路线见仓库根目录 [`agent_rag_growth_roadmap.md`](../agent_rag_growth_roadmap.md)。
