@@ -1,6 +1,6 @@
 """opendataloader-pdf 解析脚本：PDF -> layout JSON / Markdown / 图片清单。
 
-典型输入是 `parsers.script_craw` 生成的网页快照 PDF：
+典型输入是 `parsers.rewebpage_craw` 生成的网页快照 PDF：
 
     outputs/webpages/<page-slug>/page.pdf
 
@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from rag_pdfs.pdf_layout import (
+from parsers.document.layout import (
     clean_text,
     is_caption_element,
     is_heading,
@@ -32,13 +32,15 @@ from rag_pdfs.pdf_layout import (
     is_text,
     reorder_elements_by_bbox,
 )
-from rag_pdfs.pdf_parser import (
+from parsers.document.opendataloader import (
+    find_existing_layout_json,
     load_elements,
     path_for_storage,
     require_java,
     resolve_image_path,
     run_opendataloader,
 )
+from parsers.document.package import as_jsonable, write_jsonl
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -94,7 +96,7 @@ def latest_page_pdf(root: Path = DEFAULT_WEBPAGE_DIR) -> Path:
     candidates = sorted(root.glob("*/page.pdf"), key=lambda p: p.stat().st_mtime)
     if not candidates:
         raise FileNotFoundError(
-            f"未找到 {root}/<slug>/page.pdf；请先运行 python -m parsers.script_craw。"
+            f"未找到 {root}/<slug>/page.pdf；请先运行 python -m parsers.rewebpage_craw。"
         )
     return candidates[-1].resolve()
 
@@ -129,81 +131,6 @@ def preserve_source_pdf(pdf_path: Path, out_dir: Path) -> str:
     if pdf_path.resolve() != source_path.resolve():
         shutil.copy2(pdf_path, source_path)
     return path_for_storage(source_path, out_dir)
-
-
-def find_existing_opendataloader_json(out_dir: Path) -> Path:
-    ignored = {
-        "summary.json",
-        "parse_summary.json",
-        "elements.json",
-        "images.json",
-        "elements.jsonl",
-        "images.jsonl",
-    }
-    candidates = sorted(
-        [
-            path
-            for path in out_dir.glob("*.json")
-            if path.name not in ignored and not path.name.endswith(".schema.json")
-        ],
-        key=lambda p: p.stat().st_mtime,
-    )
-    if not candidates:
-        raise RuntimeError(f"--skip-parse set, but no layout JSON found in {out_dir}")
-    return candidates[-1]
-
-
-def run_opendataloader_with_pages(
-    pdf_path: Path,
-    out_dir: Path,
-    image_dir: Path,
-    *,
-    pages: str | None,
-    quiet: bool,
-) -> Path:
-    """本地轻包装：支持 pages/quiet，同时保持 rag_pdfs.pdf_parser 的默认参数。"""
-    try:
-        import opendataloader_pdf
-    except ImportError as exc:
-        raise RuntimeError(
-            "Missing package: opendataloader-pdf. Install it with:\n"
-            "    uv add opendataloader-pdf"
-        ) from exc
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    image_dir.mkdir(parents=True, exist_ok=True)
-
-    opendataloader_pdf.convert(
-        input_path=[str(pdf_path)],
-        output_dir=str(out_dir),
-        format="json,markdown",
-        image_output="external",
-        image_format="png",
-        image_dir=str(image_dir),
-        pages=pages,
-        quiet=quiet,
-    )
-
-    json_files = sorted(out_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
-    if not json_files:
-        json_files = sorted(out_dir.rglob("*.json"), key=lambda p: p.stat().st_mtime)
-    if not json_files:
-        raise RuntimeError(f"No JSON output found in {out_dir}")
-    return json_files[-1]
-
-
-def as_jsonable(value: Any) -> Any:
-    try:
-        json.dumps(value)
-        return value
-    except TypeError:
-        return str(value)
-
-
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as fh:
-        for row in rows:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def markdown_image_alt(element: Any) -> str:
@@ -365,19 +292,16 @@ def main() -> None:
     require_java()
 
     if args.skip_parse:
-        json_path = find_existing_opendataloader_json(out_dir)
+        json_path = find_existing_layout_json(out_dir)
         print(f"复用 JSON: {json_path}")
-    elif args.pages or args.quiet:
-        json_path = run_opendataloader_with_pages(
+    else:
+        json_path = run_opendataloader(
             pdf_path,
             out_dir,
             image_dir,
             pages=args.pages,
             quiet=args.quiet,
         )
-    else:
-        # 主线 parser 的默认实现，保持与 rag_pdfs.ingest_img 一致。
-        json_path = run_opendataloader(pdf_path, out_dir, image_dir)
 
     summary = {
         "source_pdf": str(pdf_path),

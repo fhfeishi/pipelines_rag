@@ -571,3 +571,107 @@ wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
 ```
 
 备注：首次并发 smoke 时遇到一次 WSL 服务层 `Wsl/Service/0x8007274c`，单独重跑同命令通过。
+
+## 16. 全仓库工程梳理与章程更新（2026-07-07）
+
+### 16.1 梳理结论（摘要）
+
+- **parsers 完成度盘点**：仅 `redox_opendataloaderpdf`（~95%）完整实现 StaticParsePackage 契约；
+  `rewebpage_craw`（~90%）/ `reaudio_dashscope`（~85%）是 Layer 0 采集产物；
+  `firecrawl` probe 通过缺 key；liteparse / mineru / unlimitedocr / rescrapy_* 为占位或空文件。
+- **依赖倒置确认**：`parsers/redox_opendataloaderpdf.py` L27–40 是唯一 import 点，
+  引用 `pdf_layout` 6 个函数 + `pdf_parser` 5 个函数。
+- **rag_pdfs 新发现问题**（已列入根 strata.md §4.6）：query 路径同一问题最多检索 3 次；
+  query/eval 反向 import ingest 的 `get_setting`/`build_embeddings`；
+  `pdf_filter.filter_image_elements` 死代码；`write_jsonl` 三处重复；零测试；
+  pyproject 未打包 parsers；BM25 分词不支持中文；本机 outputs/ 均为旧契约遗留产物。
+
+### 16.2 文档更新
+
+- 根 `strata.md`：新增 §3.1 目标态模块地图（parsers/document/ 下沉 + rag_pdfs 拆分落点）、
+  §4.4 工具完成度实测表与占位处置原则、§4.6 工程卫生清单；§8 优先级改为
+  "下沉 → --parse-dir → 拆 ingest" 三步节奏。
+- `parsers/plan.md`：新增工具完成度与处置表、契约现实差距说明；下一步优先级改为
+  下沉 parse 核心 → 对接 --parse-dir → 阅读顺序验证 → 清理占位模块。
+- `rag_pdfs/strata.md`：§4 目标态模块表细化为具体拆分落点
+  （runtime / parse_source / captioner / indexer 新模块 + pdf_* 迁移去向）。
+- `rag_pdfs/notes.md`：尾部误粘贴的《第一性原理思维》长文迁至
+  `knowledge/first_principles_thinking.md`，notes 收敛为纯 RAG 实验设计。
+
+### 16.3 验证
+
+```bash
+uv run -m rag_pdfs.ingest_img --help    # OK
+uv run -m rag_pdfs.query_img --help     # OK
+uv run -m rag_pdfs.eval_img --help      # OK
+uv run -m parsers.static_structurer --list-tools  # OK，5 工具
+```
+
+仅文档与 notes 迁移，无代码行为变化。
+
+## 17. parse 核心下沉 parsers/document/，修复依赖倒置（2026-07-07）
+
+### 17.1 改动
+
+- 新建 `parsers/document/`（Layer 1 共享核心，禁止 import rag_pdfs）：
+  - `layout.py`：LayoutElement、阅读顺序、section/context、bbox 工具（原 `rag_pdfs/pdf_layout.py`，
+    RAG 专属的 ImageCaption / SkippedImage 留在 rag_pdfs）。
+  - `opendataloader.py`：`run_opendataloader` 合并 pages/quiet 变体为单一实现；
+    `find_existing_layout_json` 合并 ingest 与 redox 两份实现（统一 NON_LAYOUT_JSON_NAMES 排除集，
+    并新增排除 static_parse_manifest.json）；flatten / resolve_image_path / path_for_storage。
+  - `package.py`：write_jsonl / read_jsonl / as_jsonable。
+- `parsers/redox_opendataloaderpdf.py`：改 import `parsers.document.*`；删除本地重复的
+  `run_opendataloader_with_pages`、`find_existing_opendataloader_json`、`write_jsonl`、`as_jsonable`
+  （净减 ~75 行）；顺手修正注释/报错中的旧名 `script_craw`。
+- `rag_pdfs/pdf_layout.py` / `pdf_parser.py` 降级为兼容 shim（re-export），
+  ingest/query/eval/filter/caption_chunks 的旧 import 路径不变。
+- `pyproject.toml`：wheel packages 加入 `parsers`。
+
+### 17.2 验证
+
+```bash
+uv run python -m compileall -q parsers rag_pdfs        # OK
+uv run -m rag_pdfs.{ingest_img,query_img,eval_img} --help   # OK
+uv run -m parsers.redox_opendataloaderpdf --help       # OK
+uv run -m parsers.static_structurer --list-tools       # OK
+
+# 端到端 smoke（inputs/qwen-agentworld_blog.pdf，网页截图 PDF）
+uv run -m parsers.redox_opendataloaderpdf inputs/qwen-agentworld_blog.pdf \
+  --out outputs/smoke_refactor/opendataloader_pdf --quiet
+# → 7 元素（7 图 0 文本，截图 PDF 预期行为）；source.pdf / elements.jsonl /
+#   images.jsonl / document.md / parse_summary.json 齐全
+
+uv run -m rag_pdfs.ingest_img inputs/qwen-agentworld_blog.pdf \
+  --out outputs/smoke_refactor/opendataloader_pdf --skip-parse --dry-run
+# → 经 shim 复用 layout JSON；7 张图走 dry-run caption；chunk 产出正常
+```
+
+未验证：真实 VLM caption / Chroma 构建（无需，本次不改该路径逻辑）。
+
+### 17.3 影响
+
+- `parsers` 不再依赖 `rag_pdfs`，Layer 0–1 可独立演进（根 strata.md §4.1 P0 关闭）。
+- 下一步：`ingest_img --parse-dir` 直接消费 elements.jsonl + images/（根 strata.md §8 第 3 步）。
+
+## 18. 接口/坐标系/知识层设计定稿（2026-07-10，文档-only）
+
+三轮设计讨论的结论写入章程，无代码行为变化：
+
+- **统一接口**：RAG 原始输入统一为图文编排 markdown，但接口货币是
+  StaticParsePackage（document.md 门面 + elements.jsonl 机器接口，同一元素流生成）；
+  统一杠杆在元素流层（源 → 元素流 → 共享 write_package）。不新造 static_interface.py。
+  → 根 strata.md §3.2a、parsers/plan.md 下一步 2/3。
+- **坐标系**：section_path（heading 栈）为主逻辑坐标，跨源通用；page/bbox 降级为
+  源特定物理坐标（证据展示用）。并入 write_package 实现。 → 根 strata.md §3.2b。
+- **知识层（实验）**：新增 Layer 1.5 = OKF 式概念蒸馏（Google OKF v0.1，2026-06 发布），
+  概念文件必须带 evidence 链接指回文档层；eval 闭环前只做低成本 OKF 兼容
+  （document.md frontmatter + index.md）。 → 根 strata.md §3.2c。
+- **Layer 2–3 重定义**：从固定 pipeline 变为检索工具箱 + 度量仪器；不可删
+  （规模/长尾/度量三理由）。新实验组 F（概念级检索）/ G（agentic markdown 导航），
+  与 A–D 同标注集同指标，G 额外记录导航步数与读取字符数。
+  → rag_pdfs/notes.md 实验组表、rag_pdfs/strata.md §10。
+- 根 strata.md §8 优先级更新：第 3 步扩为 StaticParsePackage 接口落地
+  （write/load_package + section_path + OKF 兼容 + --parse-dir），新增第 4 步
+  markdown→元素流 adapter，F/G 实验列为第 7 步。
+
+验证：`uv run -m rag_pdfs.ingest_img --help` OK（文档-only 变更）。

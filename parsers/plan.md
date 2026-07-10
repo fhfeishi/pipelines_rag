@@ -1,10 +1,78 @@
-> `parsers` 工具箱说明、启动文档
-reaudio_xx: 处理 音视频（音频）  --> 结构化和润色之后的`markdown`
-redox_xx:处理 文档  --> 图文编排的`markdown`
-rewebpages_xx:利用AI工具获取网页`url`的信息  --> 得到 dpf、json、markdown，如果可以尽量还是图文编排的。
-rescrapy_xx:利用AI网络爬虫工具获取网页`url`的信息  --> 得到 dpf、json、markdown，如果可以尽量还是图文编排的。
-> 输出还是尽量保存到跟输入 `stem` 同名的 `outputs/ste_subdir/` 下
-> 对应的notes文档就当作一个小单元/小功能的简单汇总，因为还可能出现增补的情况
+# parsers 工具箱
+
+> 仓库分层见根目录 [`strata.md`](../strata.md)。`parsers` 负责 **Layer 0–1**：来源采集与静态结构化。
+> `rag_pdfs` 负责 Layer 2–3，**不应**反向被 parsers 依赖。
+
+## 命名约定
+
+| 前缀 | 职责 | 产出 |
+|------|------|------|
+| `redox_*` | 文档/PDF 解析 | 图文编排 `document.md` + layout 资产 |
+| `rewebpage_*` | 网页 URL 抓取 | PDF / JSON / Markdown |
+| `reaudio_*` | 音视频（Cloud ASR） | 转写 Markdown / JSON / SRT |
+| `rescrapy_*` | AI 爬虫实验 | 同 webpage，备选路径 |
+
+输出尽量放在 `outputs/<source-stem>/<tool_subdir>/`；各工具的 notes 文件记录依赖与踩坑。
+
+## 架构位置
+
+```text
+Layer 0   rewebpage_* / reaudio_* / 本地文件
+              ↓
+Layer 1   redox_* / static_structurer  →  StaticParsePackage
+              ↓
+Layer 2   rag_pdfs.ingest_img（filter / caption / chunk）
+```
+
+**依赖倒置已修复（2026-07-07）**：parse 核心已下沉至 `parsers/document/`：
+
+| 模块 | 内容 |
+|------|------|
+| `document/layout.py` | `LayoutElement`、阅读顺序、section/context、bbox 工具（原 `rag_pdfs/pdf_layout.py`） |
+| `document/opendataloader.py` | `run_opendataloader`（已合并 pages/quiet 变体）、flatten、`find_existing_layout_json`（已合并两份实现）、路径工具 |
+| `document/package.py` | `write_jsonl` / `read_jsonl` / `as_jsonable` |
+
+`redox_opendataloaderpdf` 只 import `parsers.document.*`；`rag_pdfs/pdf_layout.py` /
+`pdf_parser.py` 降级为兼容 shim（RAG 专属的 `ImageCaption` / `SkippedImage` 留在 rag_pdfs）。
+**约束**：`parsers/document/` 禁止 import `rag_pdfs`。
+
+## 工具完成度与处置（2026-07-07 盘点）
+
+| 模块 | 完成度 | 处置 |
+|------|--------|------|
+| `redox_opendataloaderpdf` | ~95%，唯一完整实现契约 | 主力；下一步下沉核心到 `parsers/document/` |
+| `static_structurer` | ~80% | 保持轻编排；修 `--parse-page-pdf` 的 slug 路径查找 |
+| `rewebpage_craw` | ~90% | 可用；输出多一层 `<slug>/` 嵌套，与契约的 `<tool_subdir>/` 不一致，待规范 |
+| `rewebpage_firecrawl` | ~85% | probe 通过；缺 API key 未跑真实 scrape |
+| `reaudio_dashscope` | ~85% | 可用；缺 manifest；非图片 RAG 主线，按 `reaudio_notes.md` P0–P3 慢速推进 |
+| `script_lm` | ~5% 草稿 | 成型前不算工具 |
+| `redox_liteparse` / `redox_mineru` / `redox_unlimitedocr` | 0%，仅注释占位 | **删除文件或实现最小 CLI 二选一**；调研结论留在 `redox_notes.md` |
+| `rescrapy_parsel` / `rescrapy_scrapling` | 0%，空文件 | 同上；愿景留在 `rescrapy_notes.md` |
+
+**契约现实差距**：StaticParsePackage 完整实现 = `redox_opendataloaderpdf` + `static_structurer` 的 manifest 层。
+网页/音视频工具是 Layer 0 采集，产物（`page.{json,md,pdf}`、`<stem>.{md,json,srt}`）**不是**契约包；
+它们进入 RAG 的路径是 `page.pdf` → opendataloader（网页截图 PDF 会得到纯图片元素，见 `rewebpage_notes.md`）。
+本机 `outputs/` 现存产物多为 2026-06 旧 CLI 遗留（缺 manifest / source.pdf / document.md），
+验证契约时应用 `static_structurer` 重跑生成新包，勿以旧产物为准。
+
+## StaticParsePackage 契约
+
+Layer 1 输出必须足够让人工检查，并可供 RAG ingest 复用：
+
+```text
+outputs/<source-stem>/
+├── static_parse_manifest.json   # static_structurer 写入
+├── source.pdf                   # 或 source.md / 转写源
+└── <tool_subdir>/               # 如 opendataloader_pdf/
+    ├── *.json
+    ├── images/
+    ├── elements.jsonl
+    ├── images.jsonl
+    ├── parse_summary.json
+    └── document.md
+```
+
+`document.md` 要求：阅读顺序、相对图片路径、页码/bbox/source metadata。
 
 ## 汇总入口：静态解析 / 静态结构化 / 静态重构
 
@@ -124,8 +192,18 @@ python -m parsers.static_structurer path/to/file.pdf
 - 从 `elements.jsonl` 同源元素流生成图文编排 `document.md`。
 - 在 Markdown 图片块中保留相对路径、页码、bbox、原始 image source。
 
-下一步优先补齐：
+下一步优先补齐（顺序即优先级；设计定稿见根 `strata.md` §3.2）：
 
-1. 继续验证 `document.md` 的阅读顺序和图文邻近关系。
-2. 评估 `flat` vs `bbox` 阅读顺序在不同 PDF 上的差异。
-3. 让 `rag_pdfs` caption/evidence citation 复用 `document.md` 或同源 metadata。
+1. ~~**下沉 parse 核心**~~：✅ 2026-07-07 完成，见上文 `parsers/document/` 表。
+2. **StaticParsePackage 接口落地**（根 strata §8 第 3 步）：
+   - `package.py` 加 `StaticParsePackage` 模型 + `load_package` / `write_package`；
+   - `write_image_aware_markdown` 从 redox 下沉到 `document/markdown.py`；
+   - 元素流加 **`section_path`** 主坐标（heading 栈，替代单一 `section_title`；
+     page/bbox 降级为物理 metadata）；
+   - OKF 兼容：`document.md` 加 frontmatter（type/title/source/timestamp）、包根生成 `index.md`；
+   - `rag_pdfs.ingest_img --parse-dir` 用 `load_package` 消费包。
+3. **`markdown → 元素流` adapter**（`document/markdown.py`）：网页改走
+   `crawl4ai page.md → 元素流`（替代截图 PDF 的纯图片路径），存量 markdown 同路径入库。
+4. 继续验证 `document.md` 的阅读顺序和图文邻近关系；评估 `flat` vs `bbox` 在不同 PDF 上的差异。
+5. 让 `rag_pdfs` caption/evidence citation 复用 `document.md` 或同源 metadata。
+6. 清理占位模块（liteparse / mineru / unlimitedocr / rescrapy_*）：删除或实现最小 CLI。
