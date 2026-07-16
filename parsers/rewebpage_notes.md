@@ -1,275 +1,243 @@
-# crawl4ai + opendataloader-pdf 网页/PDF 解析笔记
+# 网页静态采集工具：crawl4ai / Firecrawl / Scrapling
 
-本目录现在有两个可复跑脚本：
+> 更新：2026-07-16。本文是 `parsers/rewebpage_*.py` 的统一说明与验证记录。
 
-| 脚本 | 作用 | 默认产物 |
-|------|------|----------|
-| `script_craw.py` | 用 crawl4ai 抓网页，一次产出结构化 JSON、Markdown、整页 PDF | `outputs/webpages/<slug>/page.{json,md,pdf}` |
-| `script_firecrawl.py` | 用 Firecrawl API 抓网页，产出 JSON、Markdown，并在截图可用时转 PDF | `outputs/firecrawl/<slug>/page.{json,md,png,pdf}` |
-| `script_oppdf.py` | 用 opendataloader-pdf 解析 PDF，导出 layout JSON、Markdown、图片和元素清单 | `outputs/webpages/<slug>/opendataloader_pdf/` |
+## 1. 定位
 
-默认目标博客：
+三个脚本都属于 **Layer 0 网页采集**：把 URL 固化为可检查的 JSON、Markdown 和可选视觉快照。
+它们暂不直接生成完整 StaticParsePackage；后续优先让 `page.md` 走
+`markdown -> 元素流 -> write_package`，需要保留视觉证据时再让 `page.pdf` 进入
+`redox_opendataloaderpdf`。
+
+| 脚本 | 后端 | 适合场景 | API key | 可生成 PDF |
+|------|------|----------|---------|------------|
+| `rewebpage_craw.py` | crawl4ai 本地 Chromium | JS 页面、Markdown + 浏览器快照；默认后端 | 否 | 是，浏览器原生打印 |
+| `rewebpage_firecrawl.py` | Firecrawl v2 云 API / 自托管 | 本机不跑浏览器、跨环境复现、交叉验证 | 官方云需要 | 是，整页截图转 A4 PDF |
+| `rewebpage_scrapling.py` | Scrapling HTTP / Dynamic / Stealthy | 轻量 HTTP 抓取、CSS 定向正文、强反爬备选 | 否 | 否 |
+| `rewebpage_common.py` | 共享模型/写盘层 | URL、链接、标题、词数、目录和产物归一化 | — | Firecrawl 共用图片转换 |
+
+旧的空占位 `rescrapy_scrapling.py` 已删除，Scrapling 现归入统一的 `rewebpage_*` 命名和
+`static_structurer` registry。
+
+## 2. 统一输出
+
+单 URL 调用会**直接**写到 `--out-dir`，不再额外套一层 slug：
 
 ```text
-https://qwen.ai/blog?id=qwen-agentworld
+outputs/<source-stem>/<tool>/
+├── page.json             # {snapshot: 归一化字段, raw: provider 字段/省略说明}
+├── page.md               # RAG/人工检查的主文本产物
+├── page.html             # 可选
+├── page.png              # 可选，crawl4ai / Firecrawl
+├── page.pdf              # 可选，crawl4ai / Firecrawl
+└── page.mhtml            # 可选，仅 crawl4ai
 ```
 
-推荐从仓库根目录运行：
+批量 URL 调用才会使用 `<slug>/page.*`，避免文件覆盖。
+
+`page.json.snapshot` 的共同字段：
+
+```text
+provider, url, source_url, title, description, status_code,
+word_count, headings, markdown,
+links_internal, links_external, images, metadata, fetched_at
+```
+
+统一层还做了以下规范化：
+
+- 只接受绝对 `http(s)` URL；相对链接按最终 URL 补全并去除 fragment。
+- 中英文混合词数按英文 token + 单个 CJK 字符粗略统计，避免中文整段被记为 1 词。
+- Markdown 统一 LF，并保证非空文件以换行结束。
+- Firecrawl 的 Markdown/HTML/screenshot 大字段不重复塞进 JSON；`raw._omitted_artifacts`
+  记录是否已另存和原字段长度。
+- 单 URL 后端失败会返回非零退出码；多 URL 允许保留成功产物，但任一失败时总退出码仍非零。
+- 三个脚本均有 `--dry-run`，不会导入 SDK、访问网络或写文件。
+
+## 3. 安装
+
+三套依赖拆成独立 extra，默认 PDF/RAG 环境不会自动安装浏览器和云 SDK：
 
 ```bash
-# 1) 网页 -> page.json / page.md / page.pdf
-.venv/bin/python -m parsers.script_craw
+# crawl4ai
+uv sync --extra webpage-crawl4ai
+uv run crawl4ai-setup
+# setup 需要 sudo 安装系统库时，也可先只装浏览器：
+uv run playwright install chromium
 
-# 2) 自动选择 outputs/webpages 下最新的 page.pdf 解析
-.venv/bin/python -m parsers.script_oppdf
+# Firecrawl
+uv sync --extra webpage-firecrawl
+
+# Scrapling（HTTP 模式安装后即可用；browser 模式还要安装浏览器）
+uv sync --extra webpage-scrapling
+uv run scrapling install
 ```
 
-Firecrawl 版本：
+当前 `uv.lock` 解析到：crawl4ai 0.9.2、firecrawl-py 4.32.0、Scrapling 0.4.11、
+markdownify 1.2.3。`pyproject.toml` 只规定兼容下限，具体复现版本以 lock 为准。
 
-```bash
-# 只测试 Firecrawl API 域名连通性，不消耗 scrape 额度
-.venv/bin/python -m parsers.script_firecrawl --probe
-
-# 需要 configs/.env 或环境变量里有 FIRECRAWL_API_KEY
-.venv/bin/python -m parsers.script_firecrawl
-```
-
-也可以显式指定输入：
-
-```bash
-.venv/bin/python -m parsers.script_craw \
-  https://qwen.ai/blog?id=qwen-agentworld \
-  --out-dir outputs/webpages \
-  --keep-png
-
-.venv/bin/python -m parsers.script_oppdf \
-  outputs/webpages/qwen.ai_blog_id_qwen-agentworld/page.pdf
-
-.venv/bin/python -m parsers.script_firecrawl \
-  https://qwen.ai/blog?id=qwen-agentworld \
-  --include-images
-```
-
-`script_oppdf.py` 的关键产物：
-
-| 文件 | 说明 |
-|------|------|
-| `*.json` | opendataloader-pdf 原始 layout JSON |
-| `*.md` | opendataloader-pdf 生成的 Markdown |
-| `images/` | PDF 中抽出的外链 PNG |
-| `elements.jsonl` | flatten 后的元素流，保留 `type/page/content/source/bbox` |
-| `images.jsonl` | 图片元素索引，便于后续接 L1/L2 filter 或 caption |
-| `parse_summary.json` | 元素数量、类型分布、输入输出路径 |
-
-注意：本机 shell 里 `uv` 可能不在 PATH；如果 `uv run ...` 不可用，直接用仓库 `.venv/bin/python -m ...`。
-
-## Firecrawl 使用备注
-
-`script_firecrawl.py` 走 Firecrawl 云端 API，不需要本机 Playwright/Chromium，因此可以作为
-`script_craw.py` 的轻量替代或交叉验证工具。输出结构故意做得接近 crawl4ai：
-
-| 文件 | 说明 |
-|------|------|
-| `page.json` | `snapshot`（归一化字段）+ `raw`（Firecrawl SDK 原始返回） |
-| `page.md` | Firecrawl Markdown |
-| `page.html` | 传 `--include-html` 时写出 |
-| `page.png` | Firecrawl full-page screenshot 可下载时写出 |
-| `page.pdf` | 由 `page.png` 切成 A4 分页 PDF，可继续喂给 `script_oppdf.py` |
-
-API key 读取顺序：
+Firecrawl key 读取顺序：
 
 1. `--api-key`
 2. 环境变量 `FIRECRAWL_API_KEY`
 3. `configs/.env` 中的 `FIRECRAWL_API_KEY` / `firecrawl_api_key`
 
-网络路径（本机验证 2026-06-29）：
+密钥只用于运行，不写入产物或日志。
 
-| 测试 | 结果 | 结论 |
-|------|------|------|
-| `api.firecrawl.dev` DNS | 解析到 `198.18.0.13` fake-ip | 命中 Clash fake-ip |
-| 不走代理 curl | 20s 超时 | 当前 shell 没有代理环境变量时不可直连 |
-| `curl -x http://127.0.0.1:7897 https://api.firecrawl.dev/` | HTTP 200 | Firecrawl API 需要经 Clash HTTP 代理访问 |
-| `.venv/bin/python -m parsers.script_firecrawl --probe` | HTTP 200 | 脚本默认 `--http-proxy http://127.0.0.1:7897` 可用 |
-| 真实 scrape | 未执行成功 | 当前 `configs/.env` 未发现 Firecrawl key；脚本友好提示，不消耗额度 |
+## 4. 推荐调用
 
-如果你的 shell 已经导出 `https_proxy/http_proxy`，脚本会优先使用环境变量；否则默认用
-`http://127.0.0.1:7897`。不需要代理时传 `--no-http-proxy`。
-
-## 本次 Qwen 博客验证（2026-06-29）
-
-命令：
+### 4.1 汇总入口
 
 ```bash
-.venv/bin/python -m parsers.script_craw
-.venv/bin/python -m parsers.script_oppdf
+# 默认 crawl4ai，输出到 outputs/<source-stem>/crawl4ai/page.*
+uv run -m parsers.static_structurer \
+  "https://example.com/article"
+
+# Firecrawl
+uv run -m parsers.static_structurer \
+  "https://example.com/article" --tool firecrawl
+
+# Scrapling 轻量 HTTP
+uv run -m parsers.static_structurer \
+  "https://example.com/article" --tool scrapling
+
+# 网页 PDF 继续进入 opendataloader（仅 crawl4ai / Firecrawl）
+uv run -m parsers.static_structurer \
+  "https://example.com/article" --tool crawl4ai --parse-page-pdf
+
+# backend 参数放在 -- 后
+uv run -m parsers.static_structurer \
+  "https://example.com/article" --tool scrapling -- \
+  --fetcher dynamic --wait-selector article --include-html
 ```
 
-结果：
+Scrapling 不产出 `page.pdf`；与 `--parse-page-pdf` 同用时 manifest 会写一条明确的
+`skipped` 记录，而不是递归猜文件或静默失败。
 
-| 阶段 | 结果 |
-|------|------|
-| crawl4ai | `https://qwen.ai/blog?id=qwen-agentworld` 返回 200 |
-| crawl 输出 | `page.json`、`page.md`、`page.pdf` 成功写入 `outputs/webpages/qwen.ai_blog_id_qwen-agentworld/` |
-| PDF 页数 | `page.pdf` 为 7 页 A4 |
-| opendataloader 输出 | `opendataloader_pdf/page.json`、`page.md`、`elements.jsonl`、`images.jsonl`、`parse_summary.json` |
-| layout 统计 | 7 个元素；0 个文本元素；7 个图片元素 |
-
-解释：`script_craw.py` 生成的 `page.pdf` 是整页截图切分出的 PDF，因此
-opendataloader-pdf 会把每一页识别成一个大图片元素，而不会恢复网页文本。
-这正好可以测试“网页视觉快照/截图进入图片 RAG”的链路；网页正文文本请使用
-crawl4ai 直接产出的 `page.md` / `page.json`。
-
----
-
-# WSL2 mirrored + Clash TUN 模式下访问"打不开的国内网站"经验笔记
-
-> 场景:Windows 跑 Clash(TUN 模式),WSL2 用 **mirrored 网络模式**共享 Windows 网卡。
-> 典型受害站点:`qwen.ai`(国内站,但被海外节点 + DNS 污染双重打死)。
-> 本机已按此法配好 qwen.ai,**勿删 hosts / route**。最后验证日期:2026-06-26。
-
----
-
-## 0. 先搞清楚这套网络长什么样
-
-mirrored 模式下 WSL 直接复用 Windows 的网络栈,所以 **Windows 上的 Clash TUN 会同时劫持 WSL 的流量**。本机实际拓扑:
-
-| 通道 | 路由 | 含义 |
-|------|------|------|
-| `eth0` | `default via 198.18.0.2` | **Clash TUN 路径**。`198.18.0.0/16` 是 Clash 的 fake-ip 网段,一切默认流量都被它劫持走代理 |
-| `eth1` | `via 10.254.4.1` | **真实物理网关**。这是绕过 Clash 的"逃生通道",直连物理网卡出公网 |
-| DNS | `resolv.conf → 198.18.0.2` | Clash 内置 DNS。普通域名解析返回 fake-ip,由 Clash 按规则代理 |
-
-记住两个关键 IP:
-- `198.18.0.2` = Clash(代理 + DNS)
-- `10.254.4.1` = 物理网关(直连/绕过 Clash)
-
-查看真实拓扑:
-```bash
-ip route                      # 看 default 和各 /32 路由
-cat /etc/resolv.conf          # 看 nameserver
-env | grep -i proxy           # 看 http_proxy/https_proxy/all_proxy(本机=127.0.0.1:7897)
-```
-
----
-
-## 1. 故障的两个独立成因(必须分开判断)
-
-一个国内站打不开,通常是下面**两个原因叠加**,要分别确认、分别治:
-
-1. **路由问题**:Clash 把这个域名丢给了**海外节点**,而海外节点连不上该国内站 / 被站点拒绝 → 连接直接 `000`。
-2. **DNS 污染**:公共 DNS(如 `223.5.5.5`)对该域名返回 `SERVFAIL` 或投毒 IP → 根本解析不出正确地址。
-
-> qwen.ai 就是两者全中:走代理 `000`,`223.5.5.5` 解析 `SERVFAIL`。
-
----
-
-## 2. 测试 / 诊断三连
-
-### 2.1 判断是不是"路由/代理"问题
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" --max-time 8 https://站点/             # 走代理
-curl -s -o /dev/null -w "%{http_code}\n" --max-time 8 --noproxy '*' https://站点/  # 绕过代理直连
-```
-- 走代理 `000` + 绕代理 `200` → **确诊路由问题**,该站点应该直连而不是走 Clash 节点。
-- 两者都 `000` → 还有 DNS 或路由没打通,继续往下。
-
-### 2.2 判断是不是"DNS 污染"问题
-```bash
-nslookup 站点 223.5.5.5      # 阿里公共DNS,被污染会 SERVFAIL / 返回错误IP
-nslookup 站点 198.18.0.2     # Clash DNS,通常返回 198.18.x.x 的 fake-ip
-```
-返回 `SERVFAIL` 或明显不对的 IP → 确诊 DNS 污染。
-
-### 2.3 拿到"真实 IP"(关键,用 DoH 绕开污染)
-用 Cloudflare DoH,且**必须绕过本机代理**:
-```bash
-curl -s --noproxy '*' 'https://1.1.1.1/dns-query?name=站点&type=A' \
-     -H 'accept: application/dns-json' | python3 -m json.tool
-```
-> qwen.ai 实测真实 IP:`139.95.10.252`、`139.95.10.165`。
-
----
-
-## 3. 处理方案(治本三步 + 各客户端适配)
-
-针对"海外节点连不上 + DNS 污染"的国内站,标准修复 = **绕代理 + 钉死真实IP + 甩出TUN**。
-
-### 步骤 A:/etc/hosts 钉死真实 IP(对抗 DNS 污染,管 CLI 工具)
-```bash
-echo "139.95.10.165 站点" | sudo tee -a /etc/hosts
-```
-⚠️ WSL 默认会**自动重新生成 /etc/hosts**。要持久化,在 `/etc/wsl.conf` 加:
-```ini
-[network]
-generateHosts = false
-```
-(同理 `generateResolvConf = false` 可锁定 DNS,按需。)
-
-### 步骤 B:加 /32 路由,把该 IP 甩出 Clash TUN(对抗路由劫持)
-```bash
-sudo ip route add 139.95.10.165/32 via 10.254.4.1 dev eth1
-sudo ip route add 139.95.10.252/32 via 10.254.4.1 dev eth1
-```
-含义:这两个 IP 不走 `198.18.0.2`(Clash),改走 `10.254.4.1`(物理网关)直连。
-⚠️ `ip route` **重启后丢失**,需开机脚本 / 启动时重跑(可放进登录脚本或 systemd 单元)。
-
-### 步骤 C:Clash 配置里放行直连
-在 Clash 的 `rules` 顶部加(规则按顺序匹配,要放前面):
-```yaml
-rules:
-  - DOMAIN-SUFFIX,站点,DIRECT
-```
-如果用 Clash 自带 hosts,**键要写全域名**(`qwen.ai`,不能只写 `qwen`):
-```yaml
-hosts:
-  'qwen.ai': 139.95.10.252
-```
-
-### 各客户端怎么吃到这套配置
-
-| 客户端 | 做法 |
-|--------|------|
-| **curl / wget / CLI** | 加 `--noproxy '*'` 绕过环境变量代理,走 hosts+route 直连。已验证 `curl --noproxy '*' https://qwen.ai/` → 200 |
-| **浏览器(系统代理)** | 靠步骤 C 的 `DIRECT` 规则 + hosts/route 生效 |
-| **Chromium / Playwright / crawl4ai** | Chromium **既不读环境变量的 bypass,也不一定读 /etc/hosts**,必须用原生 flag,见下 |
-
-### Chromium / crawl4ai 三件套(`script_craw.py`,缺一不可)
-crawl4ai 经 `BrowserConfig(extra_args=[...])` 传:
-```python
-extra_args=[
-    "--proxy-server=http://127.0.0.1:7897",      # 1) 通用走 Clash
-    "--proxy-bypass-list=qwen.ai;*.qwen.ai",     # 2) qwen 绕过代理直连
-    "--host-resolver-rules=MAP qwen.ai 139.95.10.252",  # 3) 直连时强制真实IP
-]
-```
-三者缺一不可:
-- 只禁代理 → 其它站点全断(裸直连出不去);
-- 只放行不映射 IP → DNS 仍被污染,解析不出来。
-已验证抓取返回 200。
-
----
-
-## 4. 速查:确诊到修复的最短路径
+### 4.2 直接调用
 
 ```bash
-# 1. 真实IP
-curl -s --noproxy '*' 'https://1.1.1.1/dns-query?name=站点&type=A' -H 'accept: application/dns-json'
-# 2. 钉 hosts
-echo "<真实IP> 站点" | sudo tee -a /etc/hosts
-# 3. 甩出 TUN
-sudo ip route add <真实IP>/32 via 10.254.4.1 dev eth1
-# 4. Clash 规则加 DOMAIN-SUFFIX,站点,DIRECT
-# 5. 验证
-curl -s -o /dev/null -w "%{http_code}\n" --noproxy '*' https://站点/   # 期望 200
+# crawl4ai：Markdown + PDF；按需保留 PNG/HTML/MHTML
+uv run --extra webpage-crawl4ai -m parsers.rewebpage_craw \
+  "https://example.com/article" \
+  --out-dir outputs/manual/crawl4ai \
+  --keep-png --include-html
+
+# Firecrawl：Markdown + screenshot PNG/PDF
+uv run --extra webpage-firecrawl -m parsers.rewebpage_firecrawl \
+  "https://example.com/article" \
+  --out-dir outputs/manual/firecrawl \
+  --include-html --include-images
+
+# Scrapling：优先从 HTTP 开始；页面依赖 JS 时再升级 dynamic/stealthy
+uv run --extra webpage-scrapling -m parsers.rewebpage_scrapling \
+  "https://example.com/article" \
+  --out-dir outputs/manual/scrapling \
+  --fetcher http --selector article --include-html
+
+uv run --extra webpage-scrapling -m parsers.rewebpage_scrapling \
+  "https://example.com/app" \
+  --fetcher dynamic --wait-selector '.article-loaded' --network-idle
+
+uv run --extra webpage-scrapling -m parsers.rewebpage_scrapling \
+  "https://example.com/protected" \
+  --fetcher stealthy --solve-cloudflare
 ```
 
----
+## 5. 后端细节与选择
 
-## 5. 易错点备忘
+### crawl4ai
 
-- `--noproxy '*'` 的 `*` 要带引号,否则被 shell 展开。
-- `/etc/hosts` 和 `ip route` **都不持久**(WSL 重生成 / 重启丢路由),长期用需固化(wsl.conf + 开机脚本)。
-- Clash 规则**自上而下匹配**,`DIRECT` 规则要放在 `MATCH`/兜底规则之前。
-- Clash hosts 键必须是**完整域名**。
-- 走代理返回 `000` ≠ 网络坏了,多半是"被丢给了连不上目标的海外节点",优先怀疑路由而不是断网。
-- 物理网关 IP(本机 `10.254.4.1`)和 Clash IP(`198.18.0.2`)换机器会变,先 `ip route` 确认再套用。
+- 使用 `BrowserConfig` 管浏览器环境、`CrawlerRunConfig` 管单次抓取。
+- 默认用 `fit_markdown`，`--raw-markdown` 可切换原始 Markdown。
+- `pdf=True` 直接读取 `result.pdf`，不再依赖私有 hook 截图后用 Pillow 手工分页。
+- 可选 `--respect-robots`、`--wait-for css:...`、`--include-mhtml`。
+- 默认代理只读取环境变量，不再写死 `127.0.0.1:7897` 或某个域名/IP。
+
+### Firecrawl
+
+- 使用当前 Python SDK 的 `Firecrawl(...).scrape(url, formats=...)`。
+- screenshot format 按 v2 规范传 `{"type":"screenshot","fullPage":true,"quality":85}`。
+- 下载到的截图先规范为 PNG；需要 PDF 时按 A4 比例分页。
+- `--probe` 只测 API 域名连通性，不需要 key、不消耗 scrape 额度。
+- 官方云无 key 时会在调用前给出明确错误；自托管 `--api-url` 可按服务配置运行。
+
+### Scrapling
+
+- `--fetcher http`：最快、资源最少，超时参数在适配层从毫秒换算为 Scrapling HTTP 的秒。
+- `--fetcher dynamic`：执行 JS，支持 `--wait-selector`、`--network-idle`、`--headful`。
+- `--fetcher stealthy`：强反爬备选，`--solve-cloudflare` 只允许在该模式使用。
+- 默认依次选择 `article`、`main`、`[role=main]`、`body` 转 Markdown；也可显式
+  `--selector`。HTML 到 Markdown 使用 `markdownify`，会保留标题、列表、链接、图片引用。
+- 当前不保存浏览器截图/PDF；它的价值是轻量文字通道和跨后端正文对照。
+
+建议顺序：普通静态页先 Scrapling HTTP；需要 JS/视觉快照用 crawl4ai；本机浏览器不便运行或
+需要云端交叉验证时用 Firecrawl。是否“更好”应比较 `page.md` 的正文完整性、噪声、图片链接和
+标题结构，而不是只看请求是否返回 200。
+
+## 6. 网页进入 RAG 的两条路径
+
+```text
+文字主路径：page.md -> markdown 元素流 adapter -> StaticParsePackage -> RAG ingest
+
+视觉保真路径：page.pdf -> redox_opendataloaderpdf -> 图片元素 -> VLM caption
+```
+
+crawl4ai 的浏览器原生打印 PDF **可能保留文字层**：本次 `example.com` 组合 smoke 被
+opendataloader 解析为 3 个文本元素、0 个图片元素。Firecrawl 的 PDF 来自整页截图分页，
+以及旧版 crawl4ai 截图转 PDF，通常会成为“每页一张大图”。因此每个站点都要检查
+`elements.jsonl/parse_summary.json`；无论 PDF 是否保留文字，`page.md` 仍是网页文字主路径。
+
+## 7. 网络与代理
+
+- crawl4ai：`--proxy-server` / `--no-browser-proxy`，按需加 `--proxy-bypass` 和可重复的
+  `--host-resolver-rule`。
+- Firecrawl：`--http-proxy` / `--no-http-proxy` 控制本机到 API 和截图 URL 的链路；
+  `--proxy auto|basic|stealth|enhanced` 是 Firecrawl 云端访问目标站的另一层代理。
+- Scrapling：`--proxy` / `--no-proxy`；默认读取 `HTTPS_PROXY/HTTP_PROXY`。
+
+不要把某台机器的 Clash 端口、fake-ip、hosts 或 `/32` 路由固化进通用脚本。遇到问题先分别
+验证“本机到 provider API”和“provider/浏览器到目标网页”两段链路。
+
+## 8. 2026-07-16 验证
+
+通过：
+
+```text
+python -m unittest discover -s tests -v                         6/6 OK
+python -m compileall -q parsers/...                             OK
+ruff check / ruff format --check                                OK
+uv pip check                                                     OK
+python -m parsers.rewebpage_{craw,firecrawl,scrapling} --help   OK
+三个 backend 的 --dry-run                                      OK
+python -m parsers.static_structurer --list-tools                6 tools
+
+Scrapling HTTP -> https://example.com                           HTTP 200
+  page.json / page.md / page.html                               OK
+
+crawl4ai 0.9.2 -> https://example.com                           HTTP 200
+  page.json / page.md / page.html / page.png                    OK
+  page.json / page.md / page.pdf                                OK
+
+static_structurer -> crawl4ai / Scrapling                       HTTP 200
+  扁平 <tool>/page.* + static_parse_manifest.json               OK
+static_structurer --parse-page-pdf -> opendataloader             OK
+  example.com: 3 个文本元素 / 0 个图片元素                       OK
+
+Firecrawl API --probe                                           HTTP 200
+Firecrawl 无 key -> static_structurer                           预期失败
+  exit 1 + manifest record=failed                               OK
+wheel 构建 + 三个 extras 元数据                                 OK
+```
+
+未验证：Firecrawl 真实 scrape（当前环境未配置 `FIRECRAWL_API_KEY`）；Scrapling dynamic / stealthy
+真实反爬站点。Firecrawl 的归一化适配由离线 fake document 单测覆盖。
+
+## 9. 官方资料
+
+- [crawl4ai AsyncWebCrawler](https://docs.crawl4ai.com/api/async-webcrawler/)
+- [crawl4ai CrawlResult（screenshot / PDF / MHTML）](https://docs.crawl4ai.com/core/crawler-result/)
+- [Firecrawl Python SDK](https://github.com/firecrawl/firecrawl#python)
+- [Firecrawl v2 scrape API](https://docs.firecrawl.dev/api-reference/endpoint/scrape)
+- [Scrapling fetcher 选择](https://scrapling.readthedocs.io/en/latest/fetching/choosing/)
+- [Scrapling DynamicFetcher](https://scrapling.readthedocs.io/en/latest/fetching/dynamic/)
+- [Scrapling 安装与 extras](https://github.com/D4Vinci/Scrapling/#installation)

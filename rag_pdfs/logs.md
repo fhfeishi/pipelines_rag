@@ -675,3 +675,152 @@ uv run -m rag_pdfs.ingest_img inputs/qwen-agentworld_blog.pdf \
   markdown→元素流 adapter，F/G 实验列为第 7 步。
 
 验证：`uv run -m rag_pdfs.ingest_img --help` OK（文档-only 变更）。
+
+## 19. rewebpage 三后端统一与 Scrapling 落地（2026-07-16）
+
+### 19.1 改动
+
+- 新增 `parsers/rewebpage_common.py`：统一 `WebpageSnapshot`、URL/链接/图片规范化、
+  中英文粗略词数、单 URL 扁平目录、`page.json/page.md` bundle writer。
+- 新增 `parsers/rewebpage_scrapling.py`：支持 `http/dynamic/stealthy`、CSS selector、
+  wait/network/proxy/retry、HTML → Markdown；删除旧空占位 `rescrapy_scrapling.py`。
+- 重构 `rewebpage_craw.py`：对齐 crawl4ai 0.9.x 的 `CrawlerRunConfig` 与原生
+  `result.screenshot/result.pdf/result.mhtml`；移除私有 hook + Pillow 截图分页路径和
+  qwen.ai 固定代理/IP 默认值。
+- 重构 `rewebpage_firecrawl.py`：对齐 Firecrawl v2 screenshot object（`fullPage`），
+  加 retry、非零失败退出码、临时代理环境恢复、统一 snapshot/bundle。
+- 三后端都支持无 SDK/无网络的 `--help`、`--dry-run`；无 URL、非法 URL、非法参数返回 2，
+  任一抓取失败返回 1，修复 `static_structurer` 误判成功。
+- `static_structurer` registry 加 `scrapling`；单 URL 后端直接写 `<tool>/page.*`，
+  `--parse-page-pdf` 不再用 `newest_file` 递归猜路径。Scrapling 同该参数时记录 skipped。
+- `pyproject.toml` 新增 `webpage-crawl4ai` / `webpage-firecrawl` /
+  `webpage-scrapling` 三个独立 extras；用本机 gitignored `uv.lock` 完成依赖解析验证。
+- 新增 `tests/test_rewebpage.py` 6 个离线测试；使用/选择/网络经验统一汇总到
+  `parsers/rewebpage_notes.md`。
+
+### 19.2 验证
+
+```bash
+uv lock
+# Resolved 185 packages；lock: crawl4ai 0.9.2 / firecrawl-py 4.32.0 /
+# scrapling 0.4.11 / markdownify 1.2.3
+
+.venv/bin/python -m unittest discover -s tests -v
+# 6 tests, OK
+
+uvx ruff check parsers/rewebpage_*.py parsers/static_structurer.py \
+  tests/test_rewebpage.py
+uvx ruff format --check parsers/rewebpage_*.py parsers/static_structurer.py \
+  tests/test_rewebpage.py
+uv pip check
+# OK
+
+.venv/bin/python -m compileall -q \
+  parsers/rewebpage_common.py parsers/rewebpage_craw.py \
+  parsers/rewebpage_firecrawl.py parsers/rewebpage_scrapling.py \
+  parsers/static_structurer.py
+# OK
+
+.venv/bin/python -m parsers.rewebpage_craw --help
+.venv/bin/python -m parsers.rewebpage_firecrawl --help
+.venv/bin/python -m parsers.rewebpage_scrapling --help
+.venv/bin/python -m parsers.static_structurer --list-tools
+# OK；registry 6 tools
+
+uv run --extra webpage-scrapling -m parsers.rewebpage_scrapling \
+  https://example.com --out-dir /tmp/pipelines-rag-scrapling-smoke \
+  --no-proxy --include-html
+# HTTP 200；page.json / page.md / page.html
+
+uv run --extra webpage-crawl4ai -m parsers.rewebpage_craw \
+  https://example.com --out-dir /tmp/pipelines-rag-crawl4ai-smoke \
+  --no-browser-proxy --no-pdf --keep-png --include-html --retries 1
+# HTTP 200；page.json / page.md / page.html / page.png
+
+uv run --extra webpage-crawl4ai -m parsers.rewebpage_craw \
+  https://example.com --out-dir /tmp/pipelines-rag-crawl4ai-pdf-smoke \
+  --no-browser-proxy --retries 1
+# HTTP 200；page.json / page.md / page.pdf
+
+uv run --extra webpage-firecrawl -m parsers.rewebpage_firecrawl --probe
+# HTTP 200
+
+.venv/bin/python -m parsers.static_structurer https://example.com \
+  --tool crawl4ai --out-root /tmp/pipelines-rag-static-smoke -- \
+  --no-browser-proxy --no-pdf --retries 1
+.venv/bin/python -m parsers.static_structurer https://example.com \
+  --tool scrapling --out-root /tmp/pipelines-rag-static-scrapling-smoke -- \
+  --no-proxy --include-html
+# 两者 HTTP 200；<tool>/page.* 扁平输出与 static_parse_manifest.json 均正确
+
+.venv/bin/python -m parsers.static_structurer https://example.com \
+  --tool firecrawl --out-root /tmp/pipelines-rag-static-firecrawl-no-key
+# 预期 exit 1；manifest record=failed, error=exit_code=2，失败正确向上传播
+
+.venv/bin/python -m parsers.static_structurer https://example.com \
+  --tool crawl4ai --parse-page-pdf \
+  --out-root /tmp/pipelines-rag-page-pdf-chain -- \
+  --no-browser-proxy --retries 1
+# 组合链路 OK：page.pdf 位于预期扁平路径；opendataloader 输出 3 文本元素 / 0 图片元素。
+# 说明 crawl4ai 0.9.2 原生打印 PDF 可保留文字层；Firecrawl 截图 PDF 则仍是栅格路径。
+
+uv build --wheel --out-dir /tmp/pipelines-rag-dist
+# OK；wheel 含 4 个 rewebpage 模块，METADATA 含 3 个 webpage extras
+
+uv run -m rag_pdfs.ingest_img --help
+# OK
+```
+
+环境说明：`crawl4ai-setup` 的 `playwright install --with-deps` 需要 sudo，当前会因无交互密码失败；
+改用 `uv run playwright install chromium` 成功安装浏览器，现有系统库足以完成真实 smoke。
+Firecrawl 当前未配置 key，因此未执行真实 scrape；归一化由 fake document 单测覆盖。
+
+## 20. MinerU 3.4.4 纯 CPU adapter 与首-page smoke（2026-07-16）
+
+### 20.1 改动
+
+- `parsers/redox_mineru.py` 从注释占位升级为 CPU-first CLI adapter：固定官方
+  `pipeline` 后端，支持 doctor/dry-run/page range/method/lang/formula/table/model source、
+  ONNX 与渲染线程、处理窗口、超时、`--skip-parse` 和显式 `--overwrite`。
+- 保留 MinerU 原始 `raw/`，从官方 Markdown + `*_content_list.json` 规范化为
+  `document.md / elements.jsonl / images.jsonl / parse_summary.json / images/`；复制 source，
+  图片引用相对化，归一化重复执行幂等并保留首次解析元数据。
+- `static_structurer` registry 新增 `--tool mineru`，PDF 默认仍为 opendataloader。
+- `pyproject.toml` 新增 `mineru-cpu = ["mineru[pipeline]>=3.4.3,<4"]`；新增 4 个 MinerU
+  adapter 离线测试，与 rewebpage 合计 10 tests。
+  registry 现为 7 tools。
+
+### 20.2 验证
+
+```bash
+uv sync --extra mineru-cpu --extra webpage-crawl4ai \
+  --extra webpage-firecrawl --extra webpage-scrapling
+# MinerU 3.4.4；uv pip check OK（216 packages）
+
+uv run -m parsers.redox_mineru --doctor
+# 20 CPU / 19.53 GiB RAM / 907+ GiB free / pipeline / no warnings
+
+uv run -m parsers.redox_mineru inputs/qwen-agentworld_blog.pdf \
+  --out outputs/qwen-agentworld_blog/mineru \
+  --model-source modelscope --start 0 --end 0 --method txt \
+  --no-formula --no-table --threads 4 --inter-op-threads 1 \
+  --render-threads 1 --processing-window-size 2 --overwrite
+# 首次含约 235 MiB 模型 cache：51.962s；缓存后：20.768s
+# 1 page -> 23 elements / 4 image-chart rows；MinerU local API 正常关闭
+
+uv run -m parsers.static_structurer inputs/qwen-agentworld_blog.pdf \
+  --tool mineru -- --skip-parse
+# source.pdf + static_parse_manifest.json + mineru package OK
+
+# 连续执行两次 --skip-parse 后：4 canonical images / 4 image rows / 4 Markdown refs；
+# 所有路径存在，无重复副本，txt/no-formula/no-table/20.768s 元数据保持。
+
+uvx ruff check parsers/redox_mineru.py parsers/static_structurer.py \
+  tests/test_redox_mineru.py
+uv run python -m unittest discover -s tests -v
+# All checks passed；10 tests OK
+```
+
+环境说明：Linux torch resolver 仍安装 CUDA runtime wheels，虽然 adapter 用
+`CUDA_VISIBLE_DEVICES=""` 且 MinerU `pipeline` 纯 CPU 实跑成功；当前完整 `.venv` 约
+6.0 GiB。严格 CPU-only 的小 torch 环境留待单独评估，避免本轮改动全仓库 torch 来源。

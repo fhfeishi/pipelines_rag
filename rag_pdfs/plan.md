@@ -49,6 +49,30 @@ source data / webpage snapshot
 - 输出目录遵循 `outputs/<source-stem>/opendataloader_pdf/` 或显式 `--out`。
 - `rag_pdfs.ingest_img --help` 仍可运行；行为变化需追加 `logs.md`。
 
+### 0.2 网页采集前置层（2026-07-16）
+
+`parsers/rewebpage_{craw,firecrawl,scrapling}.py` 已统一为 Layer 0 页面快照接口：
+
+- 单 URL 直接输出到 `<source-dir>/<tool>/page.*`，不再增加 slug 层；
+- `page.json` 统一 `snapshot` 字段，provider 原始数据保留在 `raw`；
+- crawl4ai / Firecrawl 可产 `page.pdf` 作为视觉保真路径，Scrapling 提供轻量 HTTP/JS/stealthy 文字通道；
+- RAG 主文字路径仍应消费 `page.md`，待 `markdown -> 元素流` adapter 落地；Firecrawl
+  截图 PDF 常成为整页图片，crawl4ai 原生打印 PDF 则可能保留文字层（本次 smoke 为 3 文本/0 图片），
+  两者均需检查 `parse_summary.json` 后再决定用途。
+
+实现与验证细节见 [`../parsers/rewebpage_notes.md`](../parsers/rewebpage_notes.md)。
+
+### 0.3 MinerU 纯 CPU 备选解析器（2026-07-16）
+
+`parsers/redox_mineru.py` 已把 MinerU 3.4.x 的 `pipeline` 后端接入同类解析包：保留
+`raw/`，并从官方 Markdown / content list 生成 `document.md`、`elements.jsonl`、
+`images.jsonl` 和 `parse_summary.json`。`static_structurer --tool mineru` 可写顶层 manifest；
+PDF 默认仍是更轻的 opendataloader。
+
+本机无 GPU 首-page smoke 通过（23 元素、4 图像/图表、缓存后约 20.8 秒），证明 CPU
+路径可用；这只是 parser 质量交叉验证，不改变 caption 只在 ingest 发生、query 只读文本
+的主原则。实现和完整运行记录见 [`../parsers/redox_notes.md`](../parsers/redox_notes.md)。
+
 ---
 
 ## 1. 问题定义

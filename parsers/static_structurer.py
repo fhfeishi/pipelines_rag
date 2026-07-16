@@ -1,8 +1,9 @@
 """Unified static parsing/structuring entry for parser experiments.
 
 This module is intentionally a thin orchestrator. The concrete experiments stay
-in focused files such as ``redox_opendataloaderpdf.py``, ``rewebpage_craw.py``,
-``rewebpage_firecrawl.py`` and ``reaudio_dashscope.py``; this entry chooses one
+in focused files such as ``redox_opendataloaderpdf.py``, ``redox_mineru.py``,
+``rewebpage_craw.py``, ``rewebpage_firecrawl.py``, ``rewebpage_scrapling.py`` and
+``reaudio_dashscope.py``; this entry chooses one
 of them, gives it an output directory, and writes a small manifest.
 
 Examples:
@@ -31,7 +32,17 @@ DEFAULT_OUT_ROOT = REPO_ROOT / "outputs"
 
 PDF_SUFFIXES = {".pdf"}
 AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
-VIDEO_SUFFIXES = {".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
+VIDEO_SUFFIXES = {
+    ".avi",
+    ".flv",
+    ".m4v",
+    ".mkv",
+    ".mov",
+    ".mp4",
+    ".mpeg",
+    ".mpg",
+    ".webm",
+}
 TEXT_SUFFIXES = {".htm", ".html", ".md", ".markdown", ".txt"}
 
 
@@ -62,6 +73,13 @@ TOOLS: dict[str, ToolSpec] = {
         description="PDF -> layout JSON / extracted images / elements JSONL / image-aware Markdown",
         notes="parsers/redox_notes.md",
     ),
+    "mineru": ToolSpec(
+        key="mineru",
+        module="parsers.redox_mineru",
+        kinds=("pdf",),
+        description="PDF -> MinerU pipeline CPU parse / normalized static parse package",
+        notes="parsers/redox_notes.md",
+    ),
     "crawl4ai": ToolSpec(
         key="crawl4ai",
         module="parsers.rewebpage_craw",
@@ -74,6 +92,13 @@ TOOLS: dict[str, ToolSpec] = {
         module="parsers.rewebpage_firecrawl",
         kinds=("webpage",),
         description="Webpage URL -> page JSON / Markdown / screenshot PDF via Firecrawl API",
+        notes="parsers/rewebpage_notes.md",
+    ),
+    "scrapling": ToolSpec(
+        key="scrapling",
+        module="parsers.rewebpage_scrapling",
+        kinds=("webpage",),
+        description="Webpage URL -> page JSON / Markdown / optional HTML via Scrapling",
         notes="parsers/rewebpage_notes.md",
     ),
     "dashscope_asr": ToolSpec(
@@ -149,7 +174,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--reading-order",
         choices=["flat", "bbox"],
         default="flat",
-        help="Reading order passed to redox_opendataloaderpdf.",
+        help="Reading order passed to redox_opendataloaderpdf (ignored by MinerU).",
     )
     args, backend_args = parser.parse_known_args(argv)
     args.backend_args = backend_args[1:] if backend_args[:1] == ["--"] else backend_args
@@ -199,16 +224,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if tool_key == "copy_text":
         record = run_copy_text(source, source_dir, dry_run=args.dry_run)
         records.append(record)
-    elif tool_key == "opendataloader_pdf":
+    elif tool_key in {"opendataloader_pdf", "mineru"}:
         record = run_pdf_tool(
             source,
             source_dir,
+            tool_key=tool_key,
             reading_order=args.reading_order,
             dry_run=args.dry_run,
             backend_args=args.backend_args,
         )
         records.append(record)
-    elif tool_key in {"crawl4ai", "firecrawl"}:
+    elif tool_key in {"crawl4ai", "firecrawl", "scrapling"}:
         record = run_webpage_tool(
             source,
             source_dir,
@@ -217,8 +243,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             backend_args=args.backend_args,
         )
         records.append(record)
-        if args.parse_page_pdf and args.dry_run:
-            page_pdf = expected_webpage_pdf(source, source_dir / tool_key)
+        if args.parse_page_pdf and tool_key == "scrapling":
+            records.append(
+                RunRecord(
+                    tool="opendataloader_pdf",
+                    module=TOOLS["opendataloader_pdf"].module,
+                    command=[],
+                    status="skipped",
+                    error="Scrapling does not emit page.pdf; use crawl4ai or firecrawl.",
+                )
+            )
+        elif args.parse_page_pdf and args.dry_run:
+            page_pdf = expected_webpage_pdf(source_dir / tool_key)
             records.append(
                 run_pdf_tool(
                     str(page_pdf),
@@ -229,8 +265,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 )
             )
         elif args.parse_page_pdf and record.status == "ok":
-            page_pdf = newest_file(source_dir / tool_key, "page.pdf")
-            if page_pdf:
+            page_pdf = expected_webpage_pdf(source_dir / tool_key)
+            if page_pdf.is_file():
                 records.append(
                     run_pdf_tool(
                         str(page_pdf),
@@ -281,7 +317,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     source_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = source_dir / "static_parse_manifest.json"
     manifest["manifest_path"] = str(manifest_path)
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return manifest
 
 
@@ -323,7 +361,9 @@ def choose_tool(kind: str, requested: str) -> str:
     if requested != "auto":
         spec = TOOLS[requested]
         if kind not in spec.kinds:
-            raise StaticStructurerError(f"Tool {requested!r} does not support kind {kind!r}.")
+            raise StaticStructurerError(
+                f"Tool {requested!r} does not support kind {kind!r}."
+            )
         return requested
     defaults = {
         "pdf": "opendataloader_pdf",
@@ -338,26 +378,28 @@ def run_pdf_tool(
     source: str,
     source_dir: Path,
     *,
+    tool_key: str = "opendataloader_pdf",
     reading_order: str,
     dry_run: bool,
     backend_args: list[str],
 ) -> RunRecord:
     pdf_path = dry_run_path(source) if dry_run else resolve_existing_file(source)
-    out_dir = source_dir / "opendataloader_pdf"
+    spec = TOOLS[tool_key]
+    out_dir = source_dir / tool_key
     command = [
         sys.executable,
         "-m",
-        TOOLS["opendataloader_pdf"].module,
+        spec.module,
         str(pdf_path),
         "--out",
         str(out_dir),
-        "--reading-order",
-        reading_order,
-        *backend_args,
     ]
+    if tool_key == "opendataloader_pdf":
+        command.extend(["--reading-order", reading_order])
+    command.extend(backend_args)
     return run_command_record(
-        tool="opendataloader_pdf",
-        module=TOOLS["opendataloader_pdf"].module,
+        tool=tool_key,
+        module=spec.module,
         command=command,
         output_dir=out_dir,
         dry_run=dry_run,
@@ -375,7 +417,15 @@ def run_webpage_tool(
     spec = TOOLS[tool_key]
     out_dir = source_dir / tool_key
     out_arg = "--out-dir"
-    command = [sys.executable, "-m", spec.module, source, out_arg, str(out_dir), *backend_args]
+    command = [
+        sys.executable,
+        "-m",
+        spec.module,
+        source,
+        out_arg,
+        str(out_dir),
+        *backend_args,
+    ]
     return run_command_record(
         tool=tool_key,
         module=spec.module,
@@ -394,7 +444,15 @@ def run_media_tool(
 ) -> RunRecord:
     spec = TOOLS["dashscope_asr"]
     out_dir = source_dir / "reaudio_dashscope"
-    command = [sys.executable, "-m", spec.module, source, "--output-dir", str(out_dir), *backend_args]
+    command = [
+        sys.executable,
+        "-m",
+        spec.module,
+        source,
+        "--output-dir",
+        str(out_dir),
+        *backend_args,
+    ]
     return run_command_record(
         tool=spec.key,
         module=spec.module,
@@ -515,15 +573,10 @@ def dry_run_path(source: str) -> Path:
     return Path(source).expanduser().resolve()
 
 
-def newest_file(root: Path, filename: str) -> Path | None:
-    if not root.exists():
-        return None
-    candidates = sorted(root.rglob(filename), key=lambda path: path.stat().st_mtime)
-    return candidates[-1] if candidates else None
+def expected_webpage_pdf(tool_out_dir: Path) -> Path:
+    """Single-URL webpage adapters write directly under their tool directory."""
 
-
-def expected_webpage_pdf(source: str, tool_out_dir: Path) -> Path:
-    return tool_out_dir / sanitize_stem(infer_stem(source, "webpage"))[:100] / "page.pdf"
+    return tool_out_dir / "page.pdf"
 
 
 def shell_join(command: list[str]) -> str:
@@ -533,7 +586,9 @@ def shell_join(command: list[str]) -> str:
 def quote_arg(value: str) -> str:
     if not value:
         return "''"
-    if any(char.isspace() for char in value) or any(char in value for char in '"\'()[]{}'):
+    if any(char.isspace() for char in value) or any(
+        char in value for char in "\"'()[]{}"
+    ):
         return '"' + value.replace('"', '\\"') + '"'
     return value
 

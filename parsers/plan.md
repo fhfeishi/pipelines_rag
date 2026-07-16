@@ -10,7 +10,7 @@
 | `redox_*` | 文档/PDF 解析 | 图文编排 `document.md` + layout 资产 |
 | `rewebpage_*` | 网页 URL 抓取 | PDF / JSON / Markdown |
 | `reaudio_*` | 音视频（Cloud ASR） | 转写 Markdown / JSON / SRT |
-| `rescrapy_*` | AI 爬虫实验 | 同 webpage，备选路径 |
+| `rescrapy_*` | 旧的 selector/定向抽取实验 | 仅保留未实现的 Parsel 调研位 |
 
 输出尽量放在 `outputs/<source-stem>/<tool_subdir>/`；各工具的 notes 文件记录依赖与踩坑。
 
@@ -40,18 +40,25 @@ Layer 2   rag_pdfs.ingest_img（filter / caption / chunk）
 
 | 模块 | 完成度 | 处置 |
 |------|--------|------|
-| `redox_opendataloaderpdf` | ~95%，唯一完整实现契约 | 主力；下一步下沉核心到 `parsers/document/` |
+| `redox_opendataloaderpdf` | ~95%，完整实现契约 | 默认主力；CPU 友好、依赖较轻 |
+| `redox_mineru` | ~90%，CPU pipeline 真实 smoke 通过 | 高质量备选；依赖/模型较重，先按页试跑 |
 | `static_structurer` | ~80% | 保持轻编排；修 `--parse-page-pdf` 的 slug 路径查找 |
-| `rewebpage_craw` | ~90% | 可用；输出多一层 `<slug>/` 嵌套，与契约的 `<tool_subdir>/` 不一致，待规范 |
-| `rewebpage_firecrawl` | ~85% | probe 通过；缺 API key 未跑真实 scrape |
+| `rewebpage_common` | ~95% | 三后端共享 snapshot 模型、URL/链接/词数归一化、扁平单 URL 输出与 bundle writer |
+| `rewebpage_craw` | ~95% | crawl4ai 0.9.2 真实 smoke 通过；Markdown/HTML/PNG/PDF/MHTML 可选，已取消多余 slug 层 |
+| `rewebpage_firecrawl` | ~90% | v2 SDK/截图格式已校准，probe 通过；缺 API key 未跑真实 scrape |
+| `rewebpage_scrapling` | ~90% | HTTP 真实 smoke 通过；支持 http/dynamic/stealthy + CSS selector；当前不产视觉 PDF |
 | `reaudio_dashscope` | ~85% | 可用；缺 manifest；非图片 RAG 主线，按 `reaudio_notes.md` P0–P3 慢速推进 |
 | `script_lm` | ~5% 草稿 | 成型前不算工具 |
-| `redox_liteparse` / `redox_mineru` / `redox_unlimitedocr` | 0%，仅注释占位 | **删除文件或实现最小 CLI 二选一**；调研结论留在 `redox_notes.md` |
-| `rescrapy_parsel` / `rescrapy_scrapling` | 0%，空文件 | 同上；愿景留在 `rescrapy_notes.md` |
+| `redox_liteparse` / `redox_unlimitedocr` | 0%，仅注释占位 | **删除文件或实现最小 CLI 二选一**；调研结论留在 `redox_notes.md` |
+| `rescrapy_parsel` | 0%，空文件 | 删除或实现最小 CLI；Scrapling 已迁入 `rewebpage_scrapling` |
 
-**契约现实差距**：StaticParsePackage 完整实现 = `redox_opendataloaderpdf` + `static_structurer` 的 manifest 层。
+**契约现实差距**：PDF 的 StaticParsePackage 已有 `redox_opendataloaderpdf` 和
+`redox_mineru` 两个实现，顶层 manifest 由 `static_structurer` 写入；两者当前各自做一次
+规范化，尚未统一收敛到 `document.write_package`。
 网页/音视频工具是 Layer 0 采集，产物（`page.{json,md,pdf}`、`<stem>.{md,json,srt}`）**不是**契约包；
-它们进入 RAG 的路径是 `page.pdf` → opendataloader（网页截图 PDF 会得到纯图片元素，见 `rewebpage_notes.md`）。
+三个网页后端已统一 `page.json.snapshot` 字段与单 URL 扁平输出（直接写入 `<tool_subdir>/`）；
+当前视觉路径是 `page.pdf` → opendataloader：crawl4ai 原生打印 PDF 可能保留文字层，
+Firecrawl 截图 PDF 通常得到纯图片元素；文字主路径仍待 `page.md → 元素流` adapter（见 `rewebpage_notes.md`）。
 本机 `outputs/` 现存产物多为 2026-06 旧 CLI 遗留（缺 manifest / source.pdf / document.md），
 验证契约时应用 `static_structurer` 重跑生成新包，勿以旧产物为准。
 
@@ -105,8 +112,10 @@ python -m parsers.static_structurer --list-tools
 | tool | 来源类型 | 下游脚本 | notes |
 |------|----------|----------|-------|
 | `opendataloader_pdf` | PDF | `parsers.redox_opendataloaderpdf` | `redox_notes.md` |
+| `mineru` | PDF | `parsers.redox_mineru`（CPU pipeline） | `redox_notes.md` |
 | `crawl4ai` | webpage URL | `parsers.rewebpage_craw` | `rewebpage_notes.md` |
 | `firecrawl` | webpage URL | `parsers.rewebpage_firecrawl` | `rewebpage_notes.md` |
+| `scrapling` | webpage URL | `parsers.rewebpage_scrapling` | `rewebpage_notes.md` |
 | `dashscope_asr` | audio/video file or URL | `parsers.reaudio_dashscope` | `reaudio_notes.md` |
 | `copy_text` | md/txt/html | builtin copy + `document.md` | `static_structurer_notes.md` |
 
@@ -118,6 +127,13 @@ outputs/<source-stem>/
 ├── source.pdf / source.md / source.txt / ...
 ├── opendataloader_pdf/
 │   ├── <layout>.json
+│   ├── images/
+│   ├── elements.jsonl
+│   ├── images.jsonl
+│   ├── parse_summary.json
+│   └── document.md
+├── mineru/
+│   ├── raw/
 │   ├── images/
 │   ├── elements.jsonl
 │   ├── images.jsonl
@@ -141,6 +157,20 @@ python -m parsers.redox_opendataloaderpdf /mnt/e/static_docs/sources/getting-the
 ```
 
 用于验证：Java/opendataloader 可用、`source.pdf` 保存、layout JSON、`elements.jsonl`、`images.jsonl`、`document.md` 和相对图片路径。
+
+### PDF（纯 CPU 备选）：`redox_mineru.py`
+
+```bash
+uv sync --extra mineru-cpu
+uv run -m parsers.redox_mineru --doctor
+uv run -m parsers.static_structurer inputs/example.pdf --tool mineru -- \
+  --model-source modelscope --start 0 --end 0 --method txt \
+  --no-formula --no-table
+```
+
+固定使用 MinerU `pipeline` 后端；保存 `raw/` 并从 `content_list` 规范化为同类
+`document.md / elements.jsonl / images.jsonl / parse_summary.json`。本机 CPU smoke 与
+资源/依赖注意事项见 `redox_notes.md`。
 
 ### 音视频：`reaudio_dashscope.py`
 
@@ -202,8 +232,9 @@ python -m parsers.static_structurer path/to/file.pdf
      page/bbox 降级为物理 metadata）；
    - OKF 兼容：`document.md` 加 frontmatter（type/title/source/timestamp）、包根生成 `index.md`；
    - `rag_pdfs.ingest_img --parse-dir` 用 `load_package` 消费包。
-3. **`markdown → 元素流` adapter**（`document/markdown.py`）：网页改走
-   `crawl4ai page.md → 元素流`（替代截图 PDF 的纯图片路径），存量 markdown 同路径入库。
+3. **`markdown → 元素流` adapter**（`document/markdown.py`）：网页改走统一的
+   `rewebpage_* page.md → 元素流`（默认 crawl4ai，也可用 Firecrawl/Scrapling 交叉验证；
+   替代截图 PDF 的纯图片路径），存量 markdown 同路径入库。
 4. 继续验证 `document.md` 的阅读顺序和图文邻近关系；评估 `flat` vs `bbox` 在不同 PDF 上的差异。
 5. 让 `rag_pdfs` caption/evidence citation 复用 `document.md` 或同源 metadata。
-6. 清理占位模块（liteparse / mineru / unlimitedocr / rescrapy_*）：删除或实现最小 CLI。
+6. 清理剩余占位模块（liteparse / unlimitedocr / rescrapy_parsel）：删除或实现最小 CLI。

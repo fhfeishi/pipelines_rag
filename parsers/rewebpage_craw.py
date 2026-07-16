@@ -1,87 +1,39 @@
-"""crawl4ai 网页抓取脚本：网页 -> JSON / Markdown / PDF。
+"""crawl4ai adapter: webpage URL -> normalized static page bundle.
 
-默认抓取 Qwen AgentWorld 博客，并把结果写到：
-
-    outputs/webpages/<page-slug>/
-      page.json
-      page.md
-      page.pdf
-
-`page.pdf` 可直接作为 `parsers.script_oppdf` 的输入。
-
-用法：
-    python -m parsers.script_craw
-    python -m parsers.script_craw https://qwen.ai/blog?id=qwen-agentworld
-    python -m parsers.script_craw --out-dir outputs/webpages --keep-png
+Single-URL runs write ``page.json`` and ``page.md`` directly under
+``--out-dir``.  PDF, PNG, HTML and MHTML artifacts are optional.  Imports of
+the browser SDK are lazy so ``--help`` and ``--dry-run`` work without the
+optional dependency installed.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
-import io
 import os
-import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, HttpUrl
+from parsers.rewebpage_common import (
+    as_jsonable,
+    decode_base64_bytes,
+    describe_planned_outputs,
+    make_snapshot,
+    output_dir_for_url,
+    validate_urls,
+    write_page_bundle,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_URLS = ["https://qwen.ai/blog?id=qwen-agentworld"]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "outputs" / "webpages"
-
-# WSL2 + Windows Clash/TUN 环境下 qwen.ai 的已验证绕行配置，详见 craw_notes.md。
 DEFAULT_PROXY_SERVER = (
-    os.environ.get("https_proxy")
-    or os.environ.get("HTTPS_PROXY")
-    or os.environ.get("http_proxy")
+    os.environ.get("HTTPS_PROXY")
+    or os.environ.get("https_proxy")
     or os.environ.get("HTTP_PROXY")
-    or "http://127.0.0.1:7897"
+    or os.environ.get("http_proxy")
 )
-DEFAULT_PROXY_BYPASS = ["qwen.ai", "*.qwen.ai"]
-DEFAULT_HOST_RESOLVER_RULES = [
-    "MAP qwen.ai 139.95.10.252",
-    "MAP *.qwen.ai 139.95.10.252",
-]
-
-UNLOCK_SCROLL_JS = """
-(() => {
-  document.querySelectorAll('*').forEach(el => {
-    if (el === document.documentElement || el === document.body) return;
-    const s = getComputedStyle(el);
-    if (['auto','scroll','hidden'].includes(s.overflowY) ||
-        ['auto','scroll','hidden'].includes(s.overflow)) {
-      el.style.overflow = 'visible';
-      el.style.maxHeight = 'none';
-      if (s.height && s.height !== 'auto' && parseInt(s.height) > 400) el.style.height = 'auto';
-    }
-  });
-  document.documentElement.style.overflow = 'visible';
-  document.body.style.overflow = 'visible';
-})();
-"""
-
-
-class PageSnapshot(BaseModel):
-    """单个网页的结构化快照。"""
-
-    url: HttpUrl = Field(description="实际抓取到的页面地址（含重定向后地址）")
-    source_url: str = Field(description="用户传入的原始 URL")
-    title: str | None = Field(default=None, description="文章标题，优先正文首个 H1")
-    description: str | None = Field(default=None, description="meta description")
-    status_code: int | None = Field(default=None, description="HTTP 状态码")
-    word_count: int = Field(default=0, description="正文词数（粗略）")
-    headings: list[str] = Field(default_factory=list, description="正文 H1~H3 大纲")
-    markdown: str = Field(default="", description="清洗后的正文 markdown")
-    links_internal: list[str] = Field(default_factory=list, description="站内链接")
-    links_external: list[str] = Field(default_factory=list, description="站外链接")
-    fetched_at: str = Field(description="抓取时间（UTC ISO8601）")
 
 
 @dataclass(frozen=True)
@@ -92,115 +44,128 @@ class CrawlOptions:
     host_resolver_rules: list[str]
     headless: bool
     timeout_ms: int
-    delay_before_return_html: float
+    delay_seconds: float
     retries: int
     prune_threshold: float
+    raw_markdown: bool
     write_pdf: bool
     keep_png: bool
-    raw_markdown: bool
-
-
-_SCREENSHOTS: dict[str, bytes] = {}
+    include_html: bool
+    include_mhtml: bool
+    wait_for: str | None
+    respect_robots: bool
 
 
 def _split_csv(value: str | None) -> list[str]:
-    if not value:
-        return []
-    return [item.strip() for item in value.split(",") if item.strip()]
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="用 crawl4ai 抓取网页，输出 page.json / page.md / page.pdf。",
+        description="用 crawl4ai 抓取网页，输出统一 page.json / page.md 静态快照。",
     )
-    parser.add_argument(
-        "urls",
-        nargs="*",
-        help="待抓取 URL；省略时抓取 Qwen AgentWorld 博客。",
-    )
+    parser.add_argument("urls", nargs="*", help="一个或多个绝对 http(s) URL。")
     parser.add_argument(
         "--out-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
-        help=f"输出根目录，默认 {DEFAULT_OUTPUT_DIR}",
+        help=f"输出目录；单 URL 直接写入此目录。默认 {DEFAULT_OUTPUT_DIR}",
     )
     parser.add_argument(
         "--proxy-server",
         default=DEFAULT_PROXY_SERVER,
-        help="Chromium 代理服务器；默认取环境变量，兜底 http://127.0.0.1:7897。",
+        help="Chromium 代理；默认读取 HTTPS_PROXY/HTTP_PROXY，不再假定本机固定端口。",
     )
     parser.add_argument(
-        "--no-browser-proxy",
-        action="store_true",
-        help="不向 Chromium 传 --proxy-server。",
+        "--no-browser-proxy", action="store_true", help="禁用 Chromium 代理。"
     )
     parser.add_argument(
         "--proxy-bypass",
-        default=",".join(DEFAULT_PROXY_BYPASS),
-        help="逗号分隔的 Chromium proxy bypass 域名列表。",
+        default="",
+        help="逗号分隔的 Chromium proxy bypass 域名。",
     )
     parser.add_argument(
         "--host-resolver-rule",
         action="append",
-        default=None,
-        help="追加 Chromium --host-resolver-rules 条目；可重复传。",
+        default=[],
+        help="Chromium --host-resolver-rules 条目，可重复传入。",
     )
-    parser.add_argument(
-        "--no-host-resolver-rules",
-        action="store_true",
-        help="禁用默认 qwen.ai host resolver 映射。",
-    )
-    parser.add_argument(
-        "--headful",
-        action="store_true",
-        help="显示浏览器窗口，便于观察反爬或渲染问题。",
-    )
+    parser.add_argument("--headful", action="store_true", help="显示浏览器窗口。")
     parser.add_argument("--timeout-ms", type=int, default=60_000, help="页面超时毫秒。")
-    parser.add_argument("--delay", type=float, default=2.0, help="渲染后额外等待秒数。")
-    parser.add_argument("--retries", type=int, default=3, help="抓取失败重试次数。")
+    parser.add_argument(
+        "--delay", type=float, default=1.0, help="截图/返回前额外等待秒数。"
+    )
+    parser.add_argument(
+        "--retries", type=int, default=3, help="每个 URL 最大尝试次数。"
+    )
     parser.add_argument(
         "--prune-threshold",
         type=float,
         default=0.45,
-        help="crawl4ai PruningContentFilter threshold。",
+        help="PruningContentFilter threshold。",
     )
-    parser.add_argument("--no-pdf", action="store_true", help="只输出 JSON/Markdown，不生成 PDF。")
-    parser.add_argument("--keep-png", action="store_true", help="额外保存整页长截图 page.png。")
     parser.add_argument(
-        "--raw-markdown",
-        action="store_true",
-        help="page.md 使用 raw_markdown，而不是默认 fit_markdown。",
+        "--raw-markdown", action="store_true", help="使用 raw_markdown。"
     )
-    return parser.parse_args()
+    parser.add_argument("--no-pdf", action="store_true", help="不生成浏览器打印 PDF。")
+    parser.add_argument(
+        "--keep-png", action="store_true", help="保存整页截图 page.png。"
+    )
+    parser.add_argument(
+        "--include-html", action="store_true", help="保存清洗后的 page.html。"
+    )
+    parser.add_argument(
+        "--include-mhtml", action="store_true", help="保存 page.mhtml。"
+    )
+    parser.add_argument(
+        "--wait-for",
+        help="crawl4ai wait_for 表达式，例如 css:.article-loaded。",
+    )
+    parser.add_argument(
+        "--respect-robots",
+        action="store_true",
+        help="启用 crawl4ai check_robots_txt。",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="只打印计划产物，不抓取、不写文件。"
+    )
+    return parser.parse_args(argv)
 
 
 def options_from_args(args: argparse.Namespace) -> CrawlOptions:
-    host_rules = [] if args.no_host_resolver_rules else list(DEFAULT_HOST_RESOLVER_RULES)
-    if args.host_resolver_rule:
-        host_rules.extend(args.host_resolver_rule)
-
+    if args.timeout_ms <= 0:
+        raise ValueError("--timeout-ms must be greater than zero.")
+    if args.retries <= 0:
+        raise ValueError("--retries must be greater than zero.")
+    if not 0.0 <= args.prune_threshold <= 1.0:
+        raise ValueError("--prune-threshold must be between 0 and 1.")
     return CrawlOptions(
         out_dir=args.out_dir.expanduser().resolve(),
         proxy_server=None if args.no_browser_proxy else args.proxy_server,
         proxy_bypass=_split_csv(args.proxy_bypass),
-        host_resolver_rules=host_rules,
+        host_resolver_rules=list(args.host_resolver_rule),
         headless=not args.headful,
         timeout_ms=args.timeout_ms,
-        delay_before_return_html=args.delay,
-        retries=max(1, args.retries),
+        delay_seconds=max(0.0, args.delay),
+        retries=args.retries,
         prune_threshold=args.prune_threshold,
+        raw_markdown=args.raw_markdown,
         write_pdf=not args.no_pdf,
         keep_png=args.keep_png,
-        raw_markdown=args.raw_markdown,
+        include_html=args.include_html,
+        include_mhtml=args.include_mhtml,
+        wait_for=args.wait_for,
+        respect_robots=args.respect_robots,
     )
 
 
-def _build_browser_config(options: CrawlOptions):
+def _build_browser_config(options: CrawlOptions) -> Any:
     try:
         from crawl4ai import BrowserConfig
-    except ImportError as exc:
+    except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
-            "Missing package: crawl4ai. Install project/parser dependencies first."
+            "Missing package: crawl4ai. Install the `webpage-crawl4ai` extra and run "
+            "`crawl4ai-setup`."
         ) from exc
 
     extra_args: list[str] = []
@@ -209,8 +174,9 @@ def _build_browser_config(options: CrawlOptions):
         if options.proxy_bypass:
             extra_args.append("--proxy-bypass-list=" + ";".join(options.proxy_bypass))
     if options.host_resolver_rules:
-        extra_args.append("--host-resolver-rules=" + ",".join(options.host_resolver_rules))
-
+        extra_args.append(
+            "--host-resolver-rules=" + ",".join(options.host_resolver_rules)
+        )
     return BrowserConfig(
         headless=options.headless,
         user_agent_mode="random",
@@ -220,14 +186,14 @@ def _build_browser_config(options: CrawlOptions):
     )
 
 
-def _build_run_config(options: CrawlOptions):
+def _build_run_config(options: CrawlOptions) -> Any:
     try:
         from crawl4ai import CacheMode, CrawlerRunConfig
         from crawl4ai.content_filter_strategy import PruningContentFilter
         from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
-    except ImportError as exc:
+    except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
-            "Missing package: crawl4ai. Install project/parser dependencies first."
+            "Missing package: crawl4ai. Install the `webpage-crawl4ai` extra."
         ) from exc
 
     return CrawlerRunConfig(
@@ -235,239 +201,160 @@ def _build_run_config(options: CrawlOptions):
             content_filter=PruningContentFilter(
                 threshold=options.prune_threshold,
                 threshold_type="dynamic",
-            ),
+            )
         ),
         cache_mode=CacheMode.BYPASS,
         wait_until="networkidle",
+        wait_for=options.wait_for,
         page_timeout=options.timeout_ms,
-        delay_before_return_html=options.delay_before_return_html,
+        delay_before_return_html=options.delay_seconds,
         magic=True,
         simulate_user=True,
         override_navigator=True,
         scan_full_page=True,
         wait_for_images=True,
-        pdf=False,
+        check_robots_txt=options.respect_robots,
+        screenshot=options.keep_png,
+        screenshot_wait_for=options.delay_seconds,
+        pdf=options.write_pdf,
+        capture_mhtml=options.include_mhtml,
     )
 
 
-async def _screenshot_hook(page, context=None, config=None, **kwargs):
-    """before_retrieve_html 钩子：解开滚动容器，截整页 PNG 供转 PDF。"""
-    try:
-        await page.evaluate(UNLOCK_SCROLL_JS)
-        await page.wait_for_timeout(600)
-        await page.emulate_media(media="screen")
-        _SCREENSHOTS[page.url] = await page.screenshot(full_page=True)
-    except Exception as exc:  # pragma: no cover - depends on remote page/browser
-        print(f"  整页截图失败，PDF 将跳过：{str(exc).splitlines()[0]}")
-    return page
-
-
-async def _fetch(crawler: Any, url: str, run_cfg: Any, retries: int):
-    _SCREENSHOTS.clear()
-    result = None
+async def _fetch(crawler: Any, url: str, run_config: Any, retries: int) -> Any:
+    last_error = "unknown error"
     for attempt in range(1, retries + 1):
-        result = await crawler.arun(url=url, config=run_cfg)
+        result = await crawler.arun(url=url, config=run_config)
         if result.success:
             return result
-        first_line = (result.error_message or "未知错误").splitlines()[0]
-        print(f"  第 {attempt}/{retries} 次抓取失败：{first_line}")
+        last_error = (result.error_message or last_error).splitlines()[0]
         if attempt < retries:
-            await asyncio.sleep(2 * attempt)
-
-    msg = result.error_message if result else "无结果"
-    raise RuntimeError(
-        f"抓取失败（已重试 {retries} 次）：{msg}\n"
-        "  排查建议：1) 确认 URL 在浏览器能打开；2) 强反爬可改 --headful 观察；"
-        "3) 若域名需绕过代理，调整 --proxy-bypass / --host-resolver-rule。"
-    )
+            print(f"  第 {attempt}/{retries} 次失败：{last_error}")
+            await asyncio.sleep(min(2 * attempt, 5))
+    raise RuntimeError(f"crawl4ai failed after {retries} attempt(s): {last_error}")
 
 
-def _clean_heading(text: str) -> str:
-    return re.sub(r"\s*\[[^\]]*\]\([^)]*\)", "", text).strip()
+def _markdown_text(result: Any, *, raw_markdown: bool) -> str:
+    value = result.markdown
+    if isinstance(value, str):
+        return value
+    raw = getattr(value, "raw_markdown", "") or ""
+    fit = getattr(value, "fit_markdown", "") or ""
+    return raw if raw_markdown else (fit or raw)
 
 
-def _dedupe(seq: list[str]) -> list[str]:
-    seen, out = set(), []
-    for item in seq:
-        if item and item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
-
-
-def _markdown_text(result: Any, *, raw_markdown: bool) -> tuple[str, str]:
-    md_obj = result.markdown
-    fit_md = getattr(md_obj, "fit_markdown", "") or ""
-    raw_md = getattr(md_obj, "raw_markdown", None) or (
-        md_obj if isinstance(md_obj, str) else ""
-    )
-    content_md = raw_md if raw_markdown else (fit_md or raw_md)
-    return content_md, raw_md
-
-
-def to_snapshot(result: Any, source_url: str, *, raw_markdown: bool) -> PageSnapshot:
-    content_md, raw_md = _markdown_text(result, raw_markdown=raw_markdown)
-    meta = result.metadata or {}
-
-    h1s = [_clean_heading(m.group(1)) for m in re.finditer(r"^#\s+(.+)$", raw_md, re.M)]
-    title = (h1s[0] if h1s else None) or meta.get("title")
-    headings = [_clean_heading(m.group(2)) for m in re.finditer(r"^(#{1,3})\s+(.+)$", raw_md, re.M)]
-
+def to_snapshot(result: Any, source_url: str, *, raw_markdown: bool):
+    metadata = as_jsonable(result.metadata or {})
     links = result.links or {}
-    internal = _dedupe([i["href"] for i in links.get("internal", []) if i.get("href")])
-    external = _dedupe([i["href"] for i in links.get("external", []) if i.get("href")])
-    final_url = getattr(result, "redirected_url", None) or getattr(result, "url", None) or source_url
-
-    return PageSnapshot(
-        url=final_url,
+    internal = [item.get("href", "") for item in links.get("internal", [])]
+    external = [item.get("href", "") for item in links.get("external", [])]
+    media = result.media or {}
+    images = [item.get("src", "") for item in media.get("images", [])]
+    final_url = getattr(result, "redirected_url", None) or result.url or source_url
+    return make_snapshot(
+        provider="crawl4ai",
         source_url=source_url,
-        title=title,
-        description=meta.get("description"),
+        final_url=final_url,
+        markdown=_markdown_text(result, raw_markdown=raw_markdown),
+        title=metadata.get("title"),
+        description=metadata.get("description"),
         status_code=getattr(result, "status_code", None),
-        word_count=len(content_md.split()),
-        headings=headings,
-        markdown=content_md,
-        links_internal=internal,
-        links_external=external,
-        fetched_at=datetime.now(timezone.utc).isoformat(),
+        internal_links=internal,
+        external_links=external,
+        images=images,
+        metadata=metadata,
     )
 
 
-def _slug(url: str) -> str:
-    parsed = urlparse(url)
-    raw = (parsed.netloc + parsed.path).strip("/")
-    if parsed.query:
-        raw += "_" + parsed.query
-    slug = "".join(c if c.isalnum() or c in "-_." else "_" for c in raw)
-    return (slug or "page")[:100]
-
-
-def _screenshot_to_pdf(png_bytes: bytes, out_path: Path) -> int:
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        raise RuntimeError(
-            "Missing package: pillow. It is required to convert full-page PNG screenshots to PDF."
-        ) from exc
-
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-    width, height = img.size
-    page_h = max(1, int(width * 1.414))  # A4 portrait ratio
-    pages = []
-    y = 0
-    while y < height:
-        crop = img.crop((0, y, width, min(y + page_h, height)))
-        if crop.height < page_h:
-            bg = Image.new("RGB", (width, page_h), "white")
-            bg.paste(crop, (0, 0))
-            crop = bg
-        pages.append(crop)
-        y += page_h
-    if pages:
-        pages[0].save(out_path, "PDF", save_all=True, append_images=pages[1:], resolution=96.0)
-    return len(pages)
-
-
-def _decode_result_pdf(result: Any) -> bytes | None:
-    pdf = getattr(result, "pdf", None)
-    if not pdf:
-        return None
-    if isinstance(pdf, bytes):
-        return pdf
-    if isinstance(pdf, str):
-        try:
-            return base64.b64decode(pdf)
-        except Exception:
-            return None
-    return None
-
-
-def save(
-    snapshot: PageSnapshot,
-    *,
-    result: Any,
-    png_bytes: bytes | None,
-    options: CrawlOptions,
+def save_result(
+    result: Any, source_url: str, options: CrawlOptions, *, url_count: int
 ) -> Path:
-    out_dir = options.out_dir / _slug(snapshot.source_url)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    (out_dir / "page.json").write_text(snapshot.model_dump_json(indent=2), encoding="utf-8")
-    (out_dir / "page.md").write_text(snapshot.markdown, encoding="utf-8")
-
-    pages = 0
-    if options.keep_png and png_bytes:
-        (out_dir / "page.png").write_bytes(png_bytes)
-
-    if options.write_pdf:
-        if png_bytes:
-            pages = _screenshot_to_pdf(png_bytes, out_dir / "page.pdf")
-        else:
-            pdf_bytes = _decode_result_pdf(result)
-            if pdf_bytes:
-                (out_dir / "page.pdf").write_bytes(pdf_bytes)
-                pages = -1
-
+    snapshot = to_snapshot(result, source_url, raw_markdown=options.raw_markdown)
+    out_dir = output_dir_for_url(options.out_dir, source_url, url_count=url_count)
+    png_bytes = decode_base64_bytes(result.screenshot) if options.keep_png else None
+    raw = {
+        "links": result.links or {},
+        "media": result.media or {},
+        "tables": getattr(result, "tables", None),
+        "metadata": result.metadata or {},
+    }
+    written = write_page_bundle(
+        out_dir,
+        snapshot,
+        raw=raw,
+        html=(getattr(result, "cleaned_html", None) or result.html)
+        if options.include_html
+        else None,
+        png_bytes=png_bytes,
+        pdf_bytes=result.pdf if options.write_pdf else None,
+        mhtml=result.mhtml if options.include_mhtml else None,
+    )
     print(f"  已写出 -> {out_dir}")
-    pdf_msg = " / page.pdf" if pages else ""
-    if pages > 0:
-        pdf_msg += f"（{pages} 页 A4）"
-    print(f"    page.json / page.md{pdf_msg}")
+    print("    " + " / ".join(path.name for path in written))
     return out_dir
 
 
-async def main(urls: list[str], options: CrawlOptions) -> None:
+async def run(urls: list[str], options: CrawlOptions) -> int:
     try:
         from crawl4ai import AsyncWebCrawler
-    except ImportError as exc:
+    except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
-            "Missing package: crawl4ai. Install project/parser dependencies first."
+            "Missing package: crawl4ai. Install the `webpage-crawl4ai` extra and run "
+            "`crawl4ai-setup`."
         ) from exc
 
-    print(f"输出目录 : {options.out_dir}")
-    print(f"待抓取   : {len(urls)} 个 URL")
-    if options.proxy_server:
-        print(f"浏览器代理: {options.proxy_server}")
-    if options.proxy_bypass:
-        print(f"代理绕过 : {', '.join(options.proxy_bypass)}")
-    print()
-
-    browser_cfg = _build_browser_config(options)
-    run_cfg = _build_run_config(options)
-
-    ok = 0
-    async with AsyncWebCrawler(config=browser_cfg) as crawler:
-        if options.write_pdf:
-            crawler.crawler_strategy.set_hook("before_retrieve_html", _screenshot_hook)
-
+    browser_config = _build_browser_config(options)
+    run_config = _build_run_config(options)
+    failures = 0
+    async with AsyncWebCrawler(config=browser_config) as crawler:
         for index, url in enumerate(urls, 1):
             print(f"[{index}/{len(urls)}] {url}")
             try:
-                result = await _fetch(crawler, url, run_cfg, options.retries)
-            except RuntimeError as exc:
-                print(f"  {exc}\n")
-                continue
+                result = await _fetch(crawler, url, run_config, options.retries)
+                snapshot = to_snapshot(result, url, raw_markdown=options.raw_markdown)
+                print(
+                    f"  状态码={snapshot.status_code} | 标题={snapshot.title!r} | "
+                    f"正文={snapshot.word_count}词"
+                )
+                save_result(result, url, options, url_count=len(urls))
+            except Exception as exc:  # remote/browser failures need per-URL isolation
+                failures += 1
+                print(f"  抓取失败：{type(exc).__name__}: {exc}")
+    print(f"完成：{len(urls) - failures}/{len(urls)} 成功。")
+    return 1 if failures else 0
 
-            snapshot = to_snapshot(result, url, raw_markdown=options.raw_markdown)
-            png = (
-                _SCREENSHOTS.get(getattr(result, "url", ""))
-                or _SCREENSHOTS.get(getattr(result, "redirected_url", ""))
-                or next(iter(_SCREENSHOTS.values()), None)
-            )
 
-            print(
-                f"  状态码={snapshot.status_code} | 标题={snapshot.title!r} | "
-                f"正文={snapshot.word_count}词 | 链接={len(snapshot.links_internal)}内/"
-                f"{len(snapshot.links_external)}外"
-            )
-            save(snapshot, result=result, png_bytes=png, options=options)
-            ok += 1
-            print()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        urls = validate_urls(args.urls)
+        options = options_from_args(args)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 2
 
-    print(f"完成：{ok}/{len(urls)} 成功。")
+    if args.dry_run:
+        optional = []
+        if options.write_pdf:
+            optional.append("page.pdf")
+        if options.keep_png:
+            optional.append("page.png")
+        if options.include_html:
+            optional.append("page.html")
+        if options.include_mhtml:
+            optional.append("page.mhtml")
+        for path in describe_planned_outputs(
+            options.out_dir, urls, optional_names=optional
+        ):
+            print(path)
+        return 0
+
+    try:
+        return asyncio.run(run(urls, options))
+    except RuntimeError as exc:
+        print(f"Error: {exc}")
+        return 1
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    target_urls = args.urls or DEFAULT_URLS
-    asyncio.run(main(target_urls, options_from_args(args)))
+    raise SystemExit(main())

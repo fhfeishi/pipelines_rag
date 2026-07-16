@@ -14,7 +14,9 @@
 ```bash
 python -m parsers.static_structurer --list-tools
 python -m parsers.static_structurer path/to/file.pdf
+python -m parsers.static_structurer path/to/file.pdf --tool mineru -- --start 0 --end 0
 python -m parsers.static_structurer "https://example.com/article" --parse-page-pdf
+python -m parsers.static_structurer "https://example.com/article" --tool scrapling
 python -m parsers.static_structurer video.mp4 --kind media -- --max-seconds 60
 ```
 
@@ -27,9 +29,13 @@ python -m parsers.static_structurer video.mp4 --kind media -- --max-seconds 60
 | `media` | `dashscope_asr` |
 | `text` | `copy_text` |
 
+PDF 默认仍选依赖更轻的 `opendataloader_pdf`；无 GPU 机器若要交叉验证解析质量，可显式
+`--tool mineru`。后端参数放在 `--` 之后透传，MinerU adapter 会强制使用 CPU-capable
+`pipeline` 后端。
+
 使用经验继续积累：
 
 - PDF 解析质量、图片抽取、阅读顺序问题：写到 `redox_notes.md`。
-- 网页抓取、代理、截图 PDF、Firecrawl/crawl4ai 对比：写到 `rewebpage_notes.md`。
+- 网页抓取、代理、截图 PDF、crawl4ai/Firecrawl/Scrapling 对比：写到 `rewebpage_notes.md`。
 - 音视频 ASR、yt-dlp、ffmpeg、DashScope 失败模式：写到 `reaudio_notes.md`。
 - 总入口是否好用、目录契约是否顺手：写到本文件。

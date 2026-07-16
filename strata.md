@@ -109,7 +109,8 @@ caption/citation 所需的结构化 metadata）**从同一个元素流生成**�
   + `write_package(out_dir, elements, ...)`（内部调用共享 markdown writer，
   从 redox 的 `write_image_aware_markdown` 下沉）。
 - **`markdown → 元素流` adapter**（一个 adapter 双收益）：让网页路径改走
-  `crawl4ai page.md → 元素流`（替代截图 PDF → opendataloader 的纯图片元素路径，找回文字），
+  统一的 `rewebpage_* page.md → 元素流`（默认 crawl4ai，可用 Firecrawl/Scrapling 交叉验证；
+  替代截图 PDF → opendataloader 的纯图片元素路径，找回文字），
   同时支持存量 markdown 直接入库。
 - 音视频转写分段即 text 元素流，套同一 writer（低优先级）。
 - 不新造 `static_interface.py`；`static_structurer` 保持唯一 CLI 编排入口，
@@ -195,13 +196,15 @@ Layer 2–3 检索工具箱
 
 | 工具 | 状态 | 说明 |
 |------|------|------|
-| `opendataloader_pdf` | 可用（~95%） | PDF → 完整 StaticParsePackage；唯一实现契约的工具 |
-| `crawl4ai` | 可用（~90%） | 网页 → page.{json,md,pdf}；Layer 0 快照，非完整契约；代理敏感 |
-| `firecrawl` | 待验证（~85%） | probe 通过；缺 API key 未跑真实 scrape |
+| `opendataloader_pdf` | 可用（~95%） | PDF → 完整 StaticParsePackage；默认、依赖较轻的主力 |
+| `mineru` | 可用（~90%） | CPU pipeline → 完整同类解析包；3.4.4 首-page 真实 smoke 通过 |
+| `crawl4ai` | 可用（~95%） | 网页 → page.{json,md,pdf/png/html/mhtml}；0.9.2 真实 smoke 通过 |
+| `firecrawl` | 待 key 验证（~90%） | v2 适配与 probe 通过；缺 API key 未跑真实 scrape |
+| `scrapling` | 可用（~90%） | HTTP 真实 smoke 通过；支持 dynamic/stealthy；当前不产视觉 PDF |
 | `dashscope_asr` | 可用（~85%） | 音视频 → 转写 MD/JSON/SRT；无 manifest，非完整契约；非主线 |
 | `copy_text` | 可用 | 纯文本归一化（static_structurer 内置） |
-| `redox_liteparse` / `mineru` / `unlimitedocr` | **占位（仅注释）** | 备选 parser；不投入前只在 notes 保留调研结论 |
-| `rescrapy_parsel` / `rescrapy_scrapling` | **占位（空文件）** | AI 爬虫备选路径，未开始 |
+| `redox_liteparse` / `unlimitedocr` | **占位（仅注释）** | 备选 parser；不投入前只在 notes 保留调研结论 |
+| `rescrapy_parsel` | **占位（空文件）** | Scrapling 已迁入 rewebpage；Parsel 留待删除或实现 |
 | `script_lm.py` | 草稿（~5%） | LM 后处理设想，未成型 |
 
 处置原则：占位文件不算"工具库"的一部分；要么在下个迭代实现最小 CLI，要么删除文件、只在 `*_notes.md` 保留调研记录。避免目录里"看起来有很多工具，实际只有一个能跑"。
@@ -218,11 +221,14 @@ Layer 2–3 检索工具箱
 - [ ] **配置反向耦合**：`query_img` / `eval_img` import `ingest_img.get_setting` / `build_embeddings`；配置与 embedding 初始化应独立成模块（如 `rag_pdfs/runtime.py`），三个 CLI 平级消费。
 - [ ] **死代码**：`pdf_filter.filter_image_elements()` 全仓库无调用（ingest 内联用 `classify_image_skip`）；二选一删除。
 - [ ] **`write_jsonl` 重复**：~~redox 份~~已收敛到 `parsers.document.package`（2026-07-07）；`ingest_img` / `eval_img` 两份待拆 ingest 时合并。
-- [ ] **零测试**：全仓库无 `test_*.py`。至少给纯函数（filter 规则、hybrid fusion、chunk 构建、eval 指标）补单测，这些不需要 API key。
-- [ ] **pyproject 打包**：~~`parsers` 不在 wheel 中~~已加入（2026-07-07）；可选依赖（crawl4ai/firecrawl/dashscope）仍未声明为 extras。
+- [ ] **测试覆盖不足**：rewebpage + MinerU adapter 已有 10 个离线单测（2026-07-16）；
+  filter 规则、hybrid fusion、chunk 构建、eval 指标仍需补测。
+- [ ] **pyproject 打包/可选依赖**：~~`parsers` 不在 wheel 中~~已加入（2026-07-07）；
+  ~~crawl4ai / Firecrawl / Scrapling / MinerU CPU extras~~已声明（2026-07-16）；
+  dashscope extra 待补。
 - [ ] **BM25 分词仅 `lower().split()`**：中文语料无效；标注集含中文问题前需换 jieba 或字符 n-gram。
-- [ ] **网页工具输出多一层 slug 嵌套**：`static_structurer --parse-page-pdf` 靠 `newest_file` 递归猜路径，脆弱。
-- [ ] **旧名残留**：`redox_opendataloaderpdf` 内已改（2026-07-07）；`rewebpage_*` 注释与各 notes 中仍有 `script_*` 旧名。
+- [x] **网页工具输出多一层 slug 嵌套**：2026-07-16 已统一单 URL 扁平输出并删除 `newest_file` 递归猜测。
+- [x] **旧名残留**：2026-07-16 已清理 rewebpage 脚本/notes 中的 `script_*` 旧名。
 - [ ] ~~`rag_pdfs/notes.md` 尾部混入无关文章~~：已迁至 `knowledge/first_principles_thinking.md`（2026-07-07）。
 
 ## 5. 核心目标（仓库级）
