@@ -3,11 +3,21 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+.venv/
+.vscode/
+.idea/
+
+
+uv.lock
+.python-version
+
+
 # 临时文件 / 日志
-temp/
-tmp/
-logs/
-logs_dir/
+**/temp/
+**/tmp/
+**/logs/
+**/logs_dir/
+
 
 # 中间文件
 inputs/
