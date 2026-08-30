@@ -1,0 +1,8 @@
+{"id":"node-foundation-finish","query":"110千伏输变电工程节点计划中，地基与基础工程计划什么时候完成？","expected_source":"110千伏节点计划-重点关注.txt","expected_terms":["地基与基础工程","2034年2月15日"]}
+{"id":"gold-structure-cap","query":"珠海黄金输变电工程的主体结构封顶计划什么时候完成？","expected_source":"110kV黄金输变电工程三级进度计划.txt","expected_terms":["主体结构封顶","2024年10月24日"]}
+{"id":"nanxi-foundation","query":"南溪（旅游）输变电工程的地基基础施工计划起止时间是什么？","expected_source":"南溪三级进度.txt","expected_terms":["地基基础施工","2025年8月2日","2025年10月22日"]}
+{"id":"sanhu-electric-cable","query":"三虎输变电工程电气部分的全站电缆敷设安装计划多久？","expected_source":"三虎输变电工程三级进度计划电气部分.txt","expected_terms":["全站电缆敷设安装","2023年4月30日","2023年6月2日"]}
+{"id":"sanhu-civil-preparation","query":"三虎输变电工程土建部分的施工准备在什么时间？","expected_source":"三虎输变电工程三级进度计划土建部分.txt","expected_terms":["施工准备","2022年6月13日","2022年6月22日"]}
+{"id":"heyi-site-preparation","query":"禾益输变电工程变电站土建的三通一平什么时候完成？","expected_source":"三级进度计划-土建.txt","expected_terms":["三通一平","2024年9月6日"]}
+{"id":"jiangwan-contract","query":"江湾输变电工程施工合同签定计划什么时候完成？","expected_source":"珠海110千伏江湾输变电工程施工进度计划（202.txt","expected_terms":["施工合同签定","2026年1月2日"]}
+{"id":"jiangwan-overall","query":"珠海江湾110kV输变电工程总体计划的开始和完成日期是什么？","expected_source":"珠海110kV江湾输变电工程总体进度计划横道图.txt","expected_terms":["2024年3月27日","2026年11月25日"]}

@@ -1,0 +1,877 @@
+# Ingest Image 运行日志
+
+> 对照 [`plan.md`](plan.md) 记录真实 PDF 运行结果、分析与下一步。  
+> 目录约定：`tmp/raws/{name}.pdf` → `tmp/outs/{name}/`
+
+**最后更新**：2026-06-07（LangChain eval_img 批量实验骨架）
+
+---
+
+## 1. 数据集与最终状态
+
+| PDF | 页数 | Caption | 跳过 | DRY RUN | Chroma | 状态 |
+|-----|------|---------|------|---------|--------|------|
+| HowToFixAISlopUsingHermesX | 14 | 8 | 1 | **0** | ✅ 50/66/58 | 真实 VLM 完成 |
+| BackpressureIsAllYouNeed | 17 | 12 | 1 | **0** | ✅ 52/74/64 | 真实 VLM 完成 |
+
+Chroma 三列 = `text_only` / `inline_caption` / `separate_mixed` 文档数。
+
+---
+
+## 2. Chunk 统计（最终）
+
+| PDF | text_only | inline | separate_caption | separate_mixed | inline/text |
+|-----|-----------|--------|------------------|----------------|-------------|
+| HermesX | 50 | 66 | 8 | 58 | 1.32× |
+| Backpressure | 52 | 74 | 12 | 64 | 1.42× |
+
+- inline chunk 数高于 text-only，但单 chunk 平均长度接近（~485–505 字符）
+- Backpressure 真实 caption 后 inline=74（DRY RUN 占位时曾虚高到 90/91）
+
+---
+
+## 3. Caption 质量观察
+
+### HermesX（8 图）
+- `section_title` 仅 1/8 有值（页眉 `(1) X`）；其余为流程图，parser 无 heading
+- 图示 caption 较好：EVAL LOOP、threshold 0.7、Hermes 节点等可检索
+- `image_path` 仍为绝对路径（早期 ingest）；新 ingest 会写相对路径
+
+### Backpressure（12 图）
+- `section_title` 12/12（跨页 heading 查找生效）
+- `image_path` 均为相对路径 `images/imageFileN.png`
+- VLM：12 次 API，约 59s（~4.9s/图），DashScope `qwen-vl-max`
+- 流程图 caption 示例：Developer → TypeScript → Automated Tests → Reviewer 反馈链
+
+### 过滤
+- 两 PDF 均跳过 page 1 的 `imageFile1.png`（bbox 面积 ≈144，`bbox_area<4000`）
+
+---
+
+## 4. 本次修复：dry-run 不再覆盖真实 caption
+
+**问题**：`--dry-run --build-chroma` 曾重写 `image_captions.jsonl` 为 DRY RUN 占位符。
+
+**修复**（`ingest_img.py`）：
+1. `load_caption_cache` + `is_placeholder_caption` — dry-run/resume 时复用真实 caption
+2. `captions_for_persist()` — 写入 jsonl 前用磁盘真实 caption 覆盖占位
+3. `write_outputs(..., dry_run=, caption_cache_path=)` — 已接线（2026-06-06 补全）
+4. dry-run 重建 Chroma 时**保留** `summary.json` 里已有的真实 `caption_stats`
+
+**验证**（2026-06-06）：
+```bash
+uv run -m rag_langchain.ingest_img tmp/raws/BackpressureIsAllYouNeed.pdf \
+  --out tmp/outs/BackpressureIsAllYouNeed --skip-parse --dry-run
+# → 12× [cached]，image_captions.jsonl 中 DRY RUN = 0
+```
+
+---
+
+## 5. Query 三策略对比（2026-06-07）
+
+命令：`uv run -m rag_langchain.query_img --index tmp/outs/{PDF} --strategy {text_only|inline|separate} [--show-evidence] "question"`
+
+参数：`fetch_k=12`，`top_k=6`；LLM = DeepSeek v4-flash。
+
+### 5.1 对比表
+
+| PDF | 问题 | 策略 | 召回 evidence | 答案质量（简评） |
+|-----|------|------|---------------|------------------|
+| HermesX | What is the eval loop? | text_only | text×6 | ✅ 定义准确（repeatable test、closes loop）；缺图示隐喻 |
+| HermesX | What is the eval loop? | inline | text×6 | ✅ 同上 + 三处运行场景；仍无独立 image chunk |
+| HermesX | What is the eval loop? | **separate** | text×5, **image×1** (imgcap-0077 p14) | ✅ 最佳：正文定义 + eye 隐喻图 + "eval loop is the system" |
+| HermesX | How does Hermes fix AI slop? | text_only | text×6 | ✅ gate/cron/memory/thumbs-down 步骤完整 |
+| HermesX | How does Hermes fix AI slop? | inline | text×6（内嵌 caption） | ✅ **最佳**：threshold 0.7、JUDGE/GATE 流程图细节（imgcap-0020/0070/0055 经 inline 召回） |
+| HermesX | How does Hermes fix AI slop? | separate | text×5, **image×1** (imgcap-0055 p10) | ✅ 好；仅 1 张 Hermes Eval Loop 图进 top-6，不如 inline 覆盖全 |
+| Backpressure | What is backpressure in software development? | text_only | text×6 | ✅ 下游信号、测试拒绝机制；无流程图 |
+| Backpressure | What is backpressure in software development? | inline | text×6（内嵌 caption） | ✅ 正文 + 内嵌 page 2 图 caption 引用 |
+| Backpressure | What is backpressure in software development? | separate | text×3, **image×3** (0013/0033/0028) | ✅ 最丰富；3 张流程图 caption 占 half context |
+| Backpressure | How do automated tests act as backpressure? | text_only | text×6 | ✅ PR 须全绿、测试套件即 backpressure |
+| Backpressure | How do automated tests act as backpressure? | inline | text×6（内嵌 caption） | ✅ 同上 + page 2 迭代反馈图 caption |
+| Backpressure | How do automated tests act as backpressure? | **separate** | text×4, **image×2** (0013 p2, 0033 p5) | ✅ 最佳：正文 + 两张 workflow 图互证 |
+
+> **image_caption chunk 仅 `separate` 策略以独立 `[Image evidence]` 召回**；`inline` 将 caption 嵌入 text chunk（检索计数仍为 text×6，但 LLM 可引用 `imgcap-*`）；`text_only` 永不召回 caption。
+
+### 5.2 `--show-evidence` 样例
+
+**HermesX / separate / eval loop** — top-6 含 imgcap-0077（page 14 eye 隐喻，nearby text 含 "eval loop is the system"）。
+
+**Backpressure / separate / automated tests** — top-6 含 imgcap-0013（Developer→Tests→Reviewer 迭代图）+ imgcap-0033（Agent backpressure 循环图）。
+
+### 5.3 小结
+
+| 维度 | 观察 |
+|------|------|
+| 纯定义题（eval loop、backpressure 定义） | text_only/inline 已够用；separate 多图示语境 |
+| 流程/组件题（Hermes fix slop、tests as backpressure） | **inline 常优于 separate**（caption 与正文同 chunk，不被 top-k 挤掉） |
+| separate 风险 | 无 reranker 时 image chunk 可占 3/6 context（backpressure 定义题），挤压正文 |
+| 下一步 | ~~接 cross-encoder reranker~~ → **已用 hybrid BM25+vector**（§6）；后续可再加 reranker |
+
+---
+
+## 6. Hybrid 检索（2026-06-07）
+
+模块：`rag_langchain/hybrid_retrieve.py`；CLI 默认 `--retrieval hybrid`。
+
+**融合公式**（min-max 归一化后）：
+
+```text
+final = alpha * norm_vector + (1 - alpha) * norm_bm25
+```
+
+- BM25：`rank_bm25.BM25Okapi`，语料来自 `{strategy}_chunks.jsonl`（或 Chroma fallback）
+- 向量：Qwen3 embedding 余弦相似度（`normalize_embeddings=True`）
+- 分词：空白切分 + lower（v1，中英文混排可接受）
+
+### 6.1 Backpressure / separate / 快测
+
+问题：`How do automated tests act as backpressure?`；`fetch_k=12`，`top_k=6`，`alpha=0.5`。
+
+| 排名 | vector-only | hybrid |
+|------|-------------|--------|
+| 1 | text-0027 | **imgcap-0013** (image) |
+| 2 | imgcap-0013 | text-0035 |
+| 3 | text-0026 | imgcap-0021 (image) |
+| 4 | text-0042 | text-0027 |
+| 5 | imgcap-0033 | imgcap-0033 |
+| 6 | text-0031 | text-0026 |
+
+**差异**：hybrid 将 workflow 图 imgcap-0013 升至 #1（BM25 命中 "automated tests" 关键词）；新增 imgcap-0021、text-0035；挤出 text-0042、text-0031。
+
+**alpha 调参提示**：
+- `alpha→1`：趋近纯向量（当前 vector-only 行为）
+- `alpha→0`：趋近纯 BM25（关键词匹配强，caption 中术语多时 image chunk 易上浮）
+- separate 策略 image 占比过高时可试 `alpha=0.6~0.7` 抬高向量权重
+
+### 6.2 命令
+
+```bash
+# 默认 hybrid
+uv run -m rag_langchain.query_img \
+  --index tmp/outs/BackpressureIsAllYouNeed \
+  --strategy separate --show-evidence \
+  "How do automated tests act as backpressure?"
+
+# 对照：纯向量
+uv run -m rag_langchain.query_img \
+  --index tmp/outs/BackpressureIsAllYouNeed \
+  --strategy separate --retrieval vector --show-evidence \
+  "How do automated tests act as backpressure?"
+
+# 调 alpha（更偏 BM25）
+uv run -m rag_langchain.query_img \
+  --index tmp/outs/BackpressureIsAllYouNeed \
+  --alpha 0.3 --show-evidence "question"
+```
+
+---
+
+## 7. 常用命令
+
+```bash
+# 单 PDF 完整 ingest
+uv run -m rag_langchain.ingest_img tmp/raws/foo.pdf \
+  --out tmp/outs/foo --vision-provider dashscope --build-chroma
+
+# 仅重建 Chroma（不调用 VLM、不覆盖 caption）
+uv run -m rag_langchain.ingest_img tmp/raws/foo.pdf \
+  --out tmp/outs/foo --skip-parse --dry-run --build-chroma
+
+# 批量
+uv run -m rag_langchain.ingest_img --batch --vision-provider dashscope --build-chroma
+```
+
+---
+
+## 8. 对照 plan.md 进度
+
+| Phase | 状态 | 备注 |
+|-------|------|------|
+| 0 解析 + section_title | ✅ | 跨页 heading 已做 |
+| 1 图片过滤 L1/L2 | ✅ | 面积、长宽比、稀疏上下文 |
+| 2 VLM caption + resume | ✅ | dry-run 保护已加 |
+| 3 inline / separate chunk | ✅ | `caption_chunks.py` |
+| 4 Chroma 四 collection | ✅ | 两 PDF 均已建 |
+| 5 query_img | 🔄 | hybrid BM25+vector 已实现；cross-encoder reranker 暂缓 |
+| 6 A/B/C 实验 | ⬜ | 缺标注问题集 + 定量指标 |
+
+---
+
+## 9. 下一步（plan.md Milestone 2–3）
+
+1. **Hybrid alpha 调参 + 定量对比**
+   - 在标注问题集上对比 `alpha=0.3/0.5/0.7` 与 vector-only 的 caption recall@k
+   - 记录 fusion promotion rate（caption 因 BM25/vector 融合升降名次）
+2. **Cross-encoder reranker（可选增强）**
+   - hybrid 已替代 reranker 作为 Phase 5 默认路径；若仍不足再接入
+3. **标注问题集**：text-only / image-helpful / image-required 三类，支撑 Phase 6 定量 A/B/C
+4. **HermesX 相对路径**：可选 `--skip-parse` 重跑 caption 统一 metadata
+5. **无 heading 页的 section 启发式**：用页内首段短标题补锚点
+
+---
+
+## 10. 产物路径
+
+```
+tmp/outs/{PDF名}/
+├── image_captions.jsonl      # 每张图 caption（勿用 dry-run 无 cache 时覆盖）
+├── skipped_images.jsonl
+├── text_only_chunks.jsonl
+├── inline_caption_chunks.jsonl
+├── separate_caption_chunks.jsonl
+├── separate_mixed_chunks.jsonl
+├── summary.json
+└── chroma/{text_only,inline_caption,separate_caption,separate_mixed}/
+```
+
+---
+
+## 11. 文档职责收敛（2026-06-07）
+
+目标：把项目文档从“探索材料混放”收敛为 agent 可维护的固定契约，方便继续推进 image-index RAG。
+
+### 11.1 调整内容
+
+| 文件 | 职责 |
+|------|------|
+| `README.md` | 重写为简洁用户手册：安装、使用、输出、字幕/caption 策略、验证、当前边界 |
+| `AGENTS.md` | 新增 canonical agent guide：开发规则、验证命令、文档维护契约 |
+| `strata.md` | 新增项目 launch charter：存在原因、pipeline、成功标准、文档契约 |
+| `CLAUDE.md` | 新增 3 行 compatibility shim，只指向 `AGENTS.md` |
+| `plan.md` | 修正 CLI 入口描述：ingest=`rag_langchain.ingest_img`，query=`rag_langchain.query_img`；同步已完成状态 |
+| `logs.md` | 追加本次文档职责收敛记录 |
+
+### 11.2 当前 canonical 入口
+
+```bash
+# ingest
+uv run -m rag_langchain.ingest_img tmp/raws/foo.pdf --out tmp/outs/foo --build-chroma
+
+# query
+uv run -m rag_langchain.query_img --index tmp/outs/foo --strategy separate --show-evidence "question"
+```
+
+### 11.3 后续维护规则
+
+- 用户怎么跑项目：更新 `README.md`。
+- agent 怎么开发和验证：更新 `AGENTS.md`。
+- 项目为什么存在、成功标准、文档契约：更新 `strata.md`。
+- image-index RAG 技术路线变化：更新 `plan.md`。
+- 真实运行、修复、验证、文档收敛过程：追加 `logs.md`。
+
+---
+
+## 12. LangChain 批量实验骨架（2026-06-07）
+
+目标：把手工 query 对比升级为可重复的实验矩阵，继续完善 image-index RAG 的 A/B/C 对照。
+
+### 12.1 新增能力
+
+| 文件 | 内容 |
+|------|------|
+| `rag_langchain/eval_img.py` | 新增批量实验 CLI，读取 JSONL 问题集，遍历 strategy / retrieval / alpha |
+| `rag_langchain/eval_questions.sample.jsonl` | 新增最小样例问题集，固定 `gold_image_ids`、`gold_chunk_ids`、`image_role` schema |
+| `rag_langchain/query_img.py` | `load_vectorstore(..., embeddings=...)` 支持复用 embedding 实例，避免批量实验重复加载模型 |
+| `rag_langchain/hybrid_retrieve.py` | 新增 `HybridRetriever`，优先复用 Chroma 已存 document embeddings，alpha sweep 只需 embed query |
+
+### 12.2 评测输出
+
+`eval_img.py` 每个 run 输出一行 JSONL，包含：
+
+- `strategy` / `retrieval` / `alpha`
+- retrieved evidence 的 `chunk_id`、`chunk_type`、`image_id`、`page`
+- `image_evidence_count`
+- `inline_image_mention_count`
+- `image_reference_count`
+- `image_evidence_ratio`
+- `context_chars`
+- `gold_image_hit`
+- `gold_chunk_hit`
+- 可选 LLM answer（默认可用 `--retrieve-only` 只跑检索）
+
+summary JSON 按 `(strategy, retrieval, alpha)` 聚合：
+
+- runs
+- avg image evidence count
+- avg context chars
+- gold image recall@k
+- gold chunk recall@k
+
+### 12.3 命令
+
+```bash
+uv run -m rag_langchain.eval_img \
+  --questions rag_langchain/eval_questions.sample.jsonl \
+  --retrieve-only \
+  --strategies text_only,inline,separate \
+  --retrievals hybrid,vector \
+  --alphas 0.3,0.5,0.7
+```
+
+默认产物：
+
+```text
+tmp/eval_runs/image_rag_eval.jsonl
+tmp/eval_runs/image_rag_eval.jsonl.summary.json
+```
+
+### 12.4 后续
+
+- 扩充 `eval_questions.sample.jsonl` 为正式标注集。
+- 补 `gold_chunk_ids`，让 text evidence recall@k 也可用。
+- 增加 answer correctness / groundedness 的人工或 LLM judge 字段。
+- 用 summary 比较 `alpha=0.3/0.5/0.7` 对 image caption recall 与 context 膨胀的影响。
+
+### 12.5 验证结果
+
+```bash
+uv run python -m compileall rag_langchain/hybrid_retrieve.py rag_langchain/query_img.py rag_langchain/eval_img.py
+uv run -m rag_langchain.eval_img --help
+uv run -m rag_langchain.eval_img \
+  --questions rag_langchain/eval_questions.sample.jsonl \
+  --retrieve-only \
+  --strategies text_only,inline,separate \
+  --retrievals hybrid,vector \
+  --alphas 0.3,0.5,0.7 \
+  --out tmp/eval_runs/sample_eval_matrix.jsonl
+```
+
+结果：4 个问题 × 3 策略 × 4 retrieval/alpha 组合 = **48 rows**，完成于约 22s。
+
+关键观察（sample 很小，只作 smoke/方向判断）：
+
+| variant | gold image recall@k | avg image refs | 备注 |
+|---------|---------------------|----------------|------|
+| text_only / hybrid | 0.00 | 0.00 | baseline 不含图片 |
+| inline / hybrid alpha=0.7 | 0.75 | 2.00 | inline caption 可通过 text chunk 间接命中 |
+| separate / hybrid alpha=0.7 | 0.75 | 1.75 | 独立 image_caption 命中较好 |
+| separate / vector | 1.00 | 1.75 | sample 上纯向量召回最高，需扩大标注集确认 |
+
+性能修复：最初 hybrid smoke 因重新 embed 全语料，单 case 约 185s；改为读取 Chroma stored embeddings 后，单 case 检索约 2.2s。
+
+---
+
+## 13. 2026 私有知识问答 Pipelines 文档（2026-06-08）
+
+目标：把“2026 年私有知识问答不应默认盲建向量库”的架构判断整理为独立 Markdown，并核验关键断言。
+
+### 13.1 新增文档
+
+| 文件 | 内容 |
+|------|------|
+| `private_knowledge_qa_2026.md` | 2026 私有知识问答 Pipelines 选型指南：真实性审查、决策模型、六类 pipeline、评估体系、对本项目 image-index RAG 的落地建议 |
+
+### 13.2 关键结论
+
+- RAG 没有退场，但已经从默认答案变成需要按场景选择的工程组件。
+- 小型稳定知识库可优先考虑长上下文 + Prompt Caching。
+- 大规模、频繁更新、强权限审计的非结构化文档仍适合生产级 RAG。
+- 代码库问答更适合 agentic retrieval + grep/read/index 混合搜索。
+- 结构化业务数据应优先走 SQL/API，而不是强行向量化。
+- 技术 PDF 场景应继续围绕 `text_only` / `inline` / `separate image_caption` 做定量评估。
+
+### 13.3 验证
+
+通过：
+
+```bash
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m rag_langchain.ingest_img --help
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m rag_langchain.query_img --help
+```
+
+备注：直接在 PowerShell UNC 路径下运行 `uv run ...` 时，`uv` 创建 `.venv` 的 `lib64` 链接清理失败；改用 WSL 原生路径后通过。
+
+---
+
+## 13. 包迁移至 rag_pdfs + ingest 质量优化（2026-06-10）
+
+### 13.1 背景：仓库状态恢复
+
+本地未推送的提交 `a7ea445`（transcript CLI 替换 RAG 实验）删除了 `rag_pdfs/`、`rag_langchain/` 等全部 RAG 代码，且本地 `main` 丢失 upstream 跟踪配置导致裸 `git pull` 报错。诊断与恢复过程详见根目录 **`git_notes.md`（2026-06-10 条目）**。恢复方式：
+
+```bash
+git branch --set-upstream-to=origin/main main
+git checkout origin/main -- rag_pdfs core rag_langchain git_notes.md
+```
+
+### 13.2 迁移：rag_pdfs 成为 canonical 包
+
+恢复后的 `rag_pdfs/` 是早期快照（内部仍 `from rag_langchain import ...`，含拼写错误的 `capiton_chunks.py`，无法独立运行）；`rag_langchain/` 才是最新代码。本次迁移：
+
+| 动作 | 说明 |
+|------|------|
+| 复制最新模块 | `ingest_img / query_img / eval_img / hybrid_retrieve / caption_chunks / pdf_layout / pdf_parser / pdf_filter / plan.md / logs.md / eval_questions.sample.jsonl` → `rag_pdfs/` |
+| 修正 import | `rag_langchain.*` → `rag_pdfs.*`（含 docstring 用法示例） |
+| 删除 | `rag_pdfs/capiton_chunks.py`（拼写错误的旧副本） |
+| 依赖恢复 | `pyproject.toml` 合并 RAG 依赖（langchain-core/chroma/openai/huggingface、sentence-transformers、rank-bm25、opendataloader-pdf、numpy）；`uv sync` 通过 |
+| 配置 | `configs/config.py` 补回 `qwen3_embedding_06b_path` 字段 |
+| 定位 | `rag_langchain/` 保留为历史探索材料（embeddings/chunkings/notebooks），不再维护 |
+
+Canonical 入口（替代 §11.2）：
+
+```bash
+uv run -m rag_pdfs.ingest_img tmp/raws/foo.pdf --out tmp/outs/foo --build-chroma
+uv run -m rag_pdfs.query_img --index tmp/outs/foo --strategy separate --show-evidence "question"
+uv run -m rag_pdfs.eval_img --questions rag_pdfs/eval_questions.sample.jsonl --retrieve-only
+```
+
+### 13.3 优化一：无 heading 页 section 兜底启发式
+
+`pdf_layout.section_title_for_element` 新增第 3 级兜底：同页/跨页均无 heading 时，取同页第一个「短文本」（≤80 字符）作为伪章节锚点；同页首个文本过长则放弃（避免把正文段落当锚点）。
+
+验证（layout JSON 重算锚点覆盖率）：
+
+| PDF | 之前 | 之后 |
+|-----|------|------|
+| HermesX | 1/8 | **9/9** |
+| Backpressure | 12/12 | 13/13（含被过滤的小图） |
+
+注意：已缓存的 HermesX caption 仍保留旧的空 `section_title`；如需更新 metadata 可 `--skip-parse` 重跑 caption。
+
+### 13.4 优化二：Caption 质量校验
+
+- `ImageCaption` 新增 `quality_flag` 字段（默认空串，旧 jsonl 缓存兼容）
+- `ingest_img.assess_caption_quality`：过短（<40 字符）或含不确定性措辞（"cannot see" / "unclear" / "as an ai" 等）→ 标记原因
+- 新 caption 与缓存复用路径均回填 flag；console 打印 `[low-quality: ...]` 与汇总警告
+- `caption_stats` 新增 `low_quality_captions` 计数
+- **设计取舍**：只标记不自动重试——vision LLM temperature=0，同 prompt 重试大概率同样输出；低质量项靠换模型或人工复跑
+
+### 13.5 验证
+
+```bash
+uv run -m rag_pdfs.ingest_img tmp/raws/BackpressureIsAllYouNeed.pdf \
+  --out tmp/outs/BackpressureIsAllYouNeed --skip-parse --dry-run
+# → 12× [cached]，chunk 统计与 §2 一致（text=52 inline=74 separate_caption=12 mixed=64）
+# → image_captions.jsonl 12/12 行含 quality_flag 字段，0 条被标记
+# → summary.json 真实 caption_stats 未被 dry-run 覆盖
+```
+
+`uv run -m rag_pdfs.{ingest_img,query_img,eval_img} --help` 与 `uv run transcript --help` 均通过（两条 pipeline 共存）。
+
+### 13.6 下一步
+
+沿用 §9：标注问题集 → `eval_img` 定量 A/B/C/D → hybrid alpha 调参；另可选 `--skip-parse` 重跑 HermesX caption 以更新 section_title/相对路径 metadata。
+
+---
+
+## 14. Roadmap 对齐与解析 Markdown Tool 优先级（2026-07-02）
+
+目标：结合根目录 `agent_rag_growth_roadmap.md`，把 `pipelines_rag` 从单纯图片 RAG 实验重新表述为 Agentic RAG 产品原型，并把当前优先级调整为“数据/PDF 解析到图文编排 Markdown”的工具层。
+
+### 14.1 文档调整
+
+| 文件 | 调整 |
+|------|------|
+| `strata.md` | 根启动文档继续做薄路由，补充 parser/tooling 入口和当前 focus |
+| `AGENTS.md` | 增加产品线/原理线背景、parser 工具箱读序、redox 输出契约和当前优先级 |
+| `CLAUDE.md` | 保持 shim，补充应读 `rag_pdfs/strata.md`、roadmap、`parsers/plan.md` |
+| `rag_pdfs/strata.md` | 将 roadmap 的产品原型定位并入 launch charter，新增解析中间层目标 |
+| `rag_pdfs/plan.md` | 新增“解析到图文 Markdown Tool”当前优先级与 Milestone 1.5 |
+| `parsers/plan.md` | 明确 redox 文档解析工具的输出目录和 `document.md` 契约 |
+
+### 14.2 当前结构决策
+
+- 稳定项目定位放在 `rag_pdfs/strata.md`。
+- Agent 执行规则放在根 `AGENTS.md`。
+- `CLAUDE.md` 不维护独立 workflow，只指向 canonical 文档。
+- `parsers/redox_*` 作为解析工具箱，先承接 PDF / layout JSON / images / image-aware Markdown。
+- `rag_pdfs` 继续负责 caption、chunk、Chroma、query、eval；解析 Markdown 是进入 RAG 之前的可检查桥梁。
+
+### 14.3 下一步
+
+已实现 `parsers.redox_opendataloaderpdf` 的 `document.md` 导出第一版：按阅读顺序输出文本和图片块，图片使用相对路径，并保留 page / bbox / source metadata。下一步是统一默认输出目录到 `outputs/<source-stem>/opendataloader_pdf/`，再评估 `flat` vs `bbox` 阅读顺序。
+
+### 14.4 验证
+
+Doc-only 更新，未改 pipeline 行为。通过：
+本节随后补了 parser 行为变化：`redox_opendataloaderpdf` 现在会额外输出 `document.md`，并在 `parse_summary.json` 中记录 `document_md`。
+
+通过：
+
+```bash
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m rag_pdfs.ingest_img --help
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.redox_opendataloaderpdf --help
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run python -m compileall parsers/redox_opendataloaderpdf.py
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag bash -lc \
+  'rm -rf tmp/codex_parser_smoke && mkdir -p tmp/codex_parser_smoke/images && \
+   cp tmp/outs/BackpressureIsAllYouNeed/BackpressureIsAllYouNeed.json tmp/codex_parser_smoke/ && \
+   cp -r tmp/outs/BackpressureIsAllYouNeed/images/. tmp/codex_parser_smoke/images/ && \
+   : > tmp/codex_parser_smoke/source.pdf && \
+   /home/baheas/.local/bin/uv run -m parsers.redox_opendataloaderpdf \
+     tmp/codex_parser_smoke/source.pdf --out tmp/codex_parser_smoke --skip-parse --quiet'
+```
+
+Smoke 结果：154 个元素、137 个文本元素、13 个图片元素；生成 `document.md`、`elements.jsonl`、`images.jsonl`、`parse_summary.json`，Markdown 中图片路径为 `images/imageFileN.png` 相对路径。
+
+---
+
+## 15. parsers 静态结构化总入口（2026-07-02）
+
+目标：把文档、网页、音视频、文本等来源先统一当作静态信息处理，并为后续持续试用各类解析工具提供一个轻量调度入口。
+
+### 15.1 新增/调整
+
+| 文件 | 调整 |
+|------|------|
+| `parsers/static_structurer.py` | 新增汇总入口：检测 `pdf/webpage/media/text`，选择 backend，输出到 `outputs/<source-stem>/`，写 `static_parse_manifest.json` |
+| `parsers/static_structurer_notes.md` | 新增总入口使用笔记，记录边界、默认工具和经验沉淀位置 |
+| `parsers/redox_opendataloaderpdf.py` | 默认输出改为 `outputs/<source-stem>/opendataloader_pdf/`；默认复制输入 PDF 为同级 `source.pdf`；保留 `--out` 和新增 `--no-copy-source` |
+| `parsers/plan.md` | 记录 `static_structurer.py` 命名、registry、输出包契约 |
+
+总入口命名选择 `static_structurer.py`：覆盖“静态解析 / 静态结构化 / 静态重构”的含义，同时避免和具体 parser backend 混淆。当前不处理动态视频画面理解；音视频先走抽音频 + ASR 的静态文本化路径。
+
+### 15.2 当前 registry
+
+| kind | 默认 tool | 下游 |
+|------|-----------|------|
+| `pdf` | `opendataloader_pdf` | `parsers.redox_opendataloaderpdf` |
+| `webpage` | `crawl4ai` | `parsers.rewebpage_craw` |
+| `media` | `dashscope_asr` | `parsers.reaudio_dashscope` |
+| `text` | `copy_text` | builtin copy + `document.md` |
+
+Firecrawl 可通过 `--tool firecrawl` 显式选择。
+
+### 15.3 验证
+
+通过：
+
+```bash
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run python -m compileall \
+  parsers/static_structurer.py parsers/redox_opendataloaderpdf.py
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer --help
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer --list-tools
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer README.md --stem smoke_static_readme
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer \
+  tmp/raws/example.pdf --kind pdf --dry-run -- --skip-parse
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m parsers.static_structurer \
+  "https://example.com/article" --kind webpage --dry-run --parse-page-pdf
+
+wsl -d Ubuntu-22.04 --cd /home/baheas/wslcodespace/pipelines_rag \
+  /home/baheas/.local/bin/uv run -m rag_pdfs.ingest_img --help
+```
+
+备注：首次并发 smoke 时遇到一次 WSL 服务层 `Wsl/Service/0x8007274c`，单独重跑同命令通过。
+
+## 16. 全仓库工程梳理与章程更新（2026-07-07）
+
+### 16.1 梳理结论（摘要）
+
+- **parsers 完成度盘点**：仅 `redox_opendataloaderpdf`（~95%）完整实现 StaticParsePackage 契约；
+  `rewebpage_craw`（~90%）/ `reaudio_dashscope`（~85%）是 Layer 0 采集产物；
+  `firecrawl` probe 通过缺 key；liteparse / mineru / unlimitedocr / rescrapy_* 为占位或空文件。
+- **依赖倒置确认**：`parsers/redox_opendataloaderpdf.py` L27–40 是唯一 import 点，
+  引用 `pdf_layout` 6 个函数 + `pdf_parser` 5 个函数。
+- **rag_pdfs 新发现问题**（已列入根 strata.md §4.6）：query 路径同一问题最多检索 3 次；
+  query/eval 反向 import ingest 的 `get_setting`/`build_embeddings`；
+  `pdf_filter.filter_image_elements` 死代码；`write_jsonl` 三处重复；零测试；
+  pyproject 未打包 parsers；BM25 分词不支持中文；本机 outputs/ 均为旧契约遗留产物。
+
+### 16.2 文档更新
+
+- 根 `strata.md`：新增 §3.1 目标态模块地图（parsers/document/ 下沉 + rag_pdfs 拆分落点）、
+  §4.4 工具完成度实测表与占位处置原则、§4.6 工程卫生清单；§8 优先级改为
+  "下沉 → --parse-dir → 拆 ingest" 三步节奏。
+- `parsers/plan.md`：新增工具完成度与处置表、契约现实差距说明；下一步优先级改为
+  下沉 parse 核心 → 对接 --parse-dir → 阅读顺序验证 → 清理占位模块。
+- `rag_pdfs/strata.md`：§4 目标态模块表细化为具体拆分落点
+  （runtime / parse_source / captioner / indexer 新模块 + pdf_* 迁移去向）。
+- `rag_pdfs/notes.md`：尾部误粘贴的《第一性原理思维》长文迁至
+  `knowledge/first_principles_thinking.md`，notes 收敛为纯 RAG 实验设计。
+
+### 16.3 验证
+
+```bash
+uv run -m rag_pdfs.ingest_img --help    # OK
+uv run -m rag_pdfs.query_img --help     # OK
+uv run -m rag_pdfs.eval_img --help      # OK
+uv run -m parsers.static_structurer --list-tools  # OK，5 工具
+```
+
+仅文档与 notes 迁移，无代码行为变化。
+
+## 17. parse 核心下沉 parsers/document/，修复依赖倒置（2026-07-07）
+
+### 17.1 改动
+
+- 新建 `parsers/document/`（Layer 1 共享核心，禁止 import rag_pdfs）：
+  - `layout.py`：LayoutElement、阅读顺序、section/context、bbox 工具（原 `rag_pdfs/pdf_layout.py`，
+    RAG 专属的 ImageCaption / SkippedImage 留在 rag_pdfs）。
+  - `opendataloader.py`：`run_opendataloader` 合并 pages/quiet 变体为单一实现；
+    `find_existing_layout_json` 合并 ingest 与 redox 两份实现（统一 NON_LAYOUT_JSON_NAMES 排除集，
+    并新增排除 static_parse_manifest.json）；flatten / resolve_image_path / path_for_storage。
+  - `package.py`：write_jsonl / read_jsonl / as_jsonable。
+- `parsers/redox_opendataloaderpdf.py`：改 import `parsers.document.*`；删除本地重复的
+  `run_opendataloader_with_pages`、`find_existing_opendataloader_json`、`write_jsonl`、`as_jsonable`
+  （净减 ~75 行）；顺手修正注释/报错中的旧名 `script_craw`。
+- `rag_pdfs/pdf_layout.py` / `pdf_parser.py` 降级为兼容 shim（re-export），
+  ingest/query/eval/filter/caption_chunks 的旧 import 路径不变。
+- `pyproject.toml`：wheel packages 加入 `parsers`。
+
+### 17.2 验证
+
+```bash
+uv run python -m compileall -q parsers rag_pdfs        # OK
+uv run -m rag_pdfs.{ingest_img,query_img,eval_img} --help   # OK
+uv run -m parsers.redox_opendataloaderpdf --help       # OK
+uv run -m parsers.static_structurer --list-tools       # OK
+
+# 端到端 smoke（inputs/qwen-agentworld_blog.pdf，网页截图 PDF）
+uv run -m parsers.redox_opendataloaderpdf inputs/qwen-agentworld_blog.pdf \
+  --out outputs/smoke_refactor/opendataloader_pdf --quiet
+# → 7 元素（7 图 0 文本，截图 PDF 预期行为）；source.pdf / elements.jsonl /
+#   images.jsonl / document.md / parse_summary.json 齐全
+
+uv run -m rag_pdfs.ingest_img inputs/qwen-agentworld_blog.pdf \
+  --out outputs/smoke_refactor/opendataloader_pdf --skip-parse --dry-run
+# → 经 shim 复用 layout JSON；7 张图走 dry-run caption；chunk 产出正常
+```
+
+未验证：真实 VLM caption / Chroma 构建（无需，本次不改该路径逻辑）。
+
+### 17.3 影响
+
+- `parsers` 不再依赖 `rag_pdfs`，Layer 0–1 可独立演进（根 strata.md §4.1 P0 关闭）。
+- 下一步：`ingest_img --parse-dir` 直接消费 elements.jsonl + images/（根 strata.md §8 第 3 步）。
+
+## 18. 接口/坐标系/知识层设计定稿（2026-07-10，文档-only）
+
+三轮设计讨论的结论写入章程，无代码行为变化：
+
+- **统一接口**：RAG 原始输入统一为图文编排 markdown，但接口货币是
+  StaticParsePackage（document.md 门面 + elements.jsonl 机器接口，同一元素流生成）；
+  统一杠杆在元素流层（源 → 元素流 → 共享 write_package）。不新造 static_interface.py。
+  → 根 strata.md §3.2a、parsers/plan.md 下一步 2/3。
+- **坐标系**：section_path（heading 栈）为主逻辑坐标，跨源通用；page/bbox 降级为
+  源特定物理坐标（证据展示用）。并入 write_package 实现。 → 根 strata.md §3.2b。
+- **知识层（实验）**：新增 Layer 1.5 = OKF 式概念蒸馏（Google OKF v0.1，2026-06 发布），
+  概念文件必须带 evidence 链接指回文档层；eval 闭环前只做低成本 OKF 兼容
+  （document.md frontmatter + index.md）。 → 根 strata.md §3.2c。
+- **Layer 2–3 重定义**：从固定 pipeline 变为检索工具箱 + 度量仪器；不可删
+  （规模/长尾/度量三理由）。新实验组 F（概念级检索）/ G（agentic markdown 导航），
+  与 A–D 同标注集同指标，G 额外记录导航步数与读取字符数。
+  → rag_pdfs/notes.md 实验组表、rag_pdfs/strata.md §10。
+- 根 strata.md §8 优先级更新：第 3 步扩为 StaticParsePackage 接口落地
+  （write/load_package + section_path + OKF 兼容 + --parse-dir），新增第 4 步
+  markdown→元素流 adapter，F/G 实验列为第 7 步。
+
+验证：`uv run -m rag_pdfs.ingest_img --help` OK（文档-only 变更）。
+
+## 19. rewebpage 三后端统一与 Scrapling 落地（2026-07-16）
+
+### 19.1 改动
+
+- 新增 `parsers/rewebpage_common.py`：统一 `WebpageSnapshot`、URL/链接/图片规范化、
+  中英文粗略词数、单 URL 扁平目录、`page.json/page.md` bundle writer。
+- 新增 `parsers/rewebpage_scrapling.py`：支持 `http/dynamic/stealthy`、CSS selector、
+  wait/network/proxy/retry、HTML → Markdown；删除旧空占位 `rescrapy_scrapling.py`。
+- 重构 `rewebpage_craw.py`：对齐 crawl4ai 0.9.x 的 `CrawlerRunConfig` 与原生
+  `result.screenshot/result.pdf/result.mhtml`；移除私有 hook + Pillow 截图分页路径和
+  qwen.ai 固定代理/IP 默认值。
+- 重构 `rewebpage_firecrawl.py`：对齐 Firecrawl v2 screenshot object（`fullPage`），
+  加 retry、非零失败退出码、临时代理环境恢复、统一 snapshot/bundle。
+- 三后端都支持无 SDK/无网络的 `--help`、`--dry-run`；无 URL、非法 URL、非法参数返回 2，
+  任一抓取失败返回 1，修复 `static_structurer` 误判成功。
+- `static_structurer` registry 加 `scrapling`；单 URL 后端直接写 `<tool>/page.*`，
+  `--parse-page-pdf` 不再用 `newest_file` 递归猜路径。Scrapling 同该参数时记录 skipped。
+- `pyproject.toml` 新增 `webpage-crawl4ai` / `webpage-firecrawl` /
+  `webpage-scrapling` 三个独立 extras；用本机 gitignored `uv.lock` 完成依赖解析验证。
+- 新增 `tests/test_rewebpage.py` 6 个离线测试；使用/选择/网络经验统一汇总到
+  `parsers/rewebpage_notes.md`。
+
+### 19.2 验证
+
+```bash
+uv lock
+# Resolved 185 packages；lock: crawl4ai 0.9.2 / firecrawl-py 4.32.0 /
+# scrapling 0.4.11 / markdownify 1.2.3
+
+.venv/bin/python -m unittest discover -s tests -v
+# 6 tests, OK
+
+uvx ruff check parsers/rewebpage_*.py parsers/static_structurer.py \
+  tests/test_rewebpage.py
+uvx ruff format --check parsers/rewebpage_*.py parsers/static_structurer.py \
+  tests/test_rewebpage.py
+uv pip check
+# OK
+
+.venv/bin/python -m compileall -q \
+  parsers/rewebpage_common.py parsers/rewebpage_craw.py \
+  parsers/rewebpage_firecrawl.py parsers/rewebpage_scrapling.py \
+  parsers/static_structurer.py
+# OK
+
+.venv/bin/python -m parsers.rewebpage_craw --help
+.venv/bin/python -m parsers.rewebpage_firecrawl --help
+.venv/bin/python -m parsers.rewebpage_scrapling --help
+.venv/bin/python -m parsers.static_structurer --list-tools
+# OK；registry 6 tools
+
+uv run --extra webpage-scrapling -m parsers.rewebpage_scrapling \
+  https://example.com --out-dir /tmp/pipelines-rag-scrapling-smoke \
+  --no-proxy --include-html
+# HTTP 200；page.json / page.md / page.html
+
+uv run --extra webpage-crawl4ai -m parsers.rewebpage_craw \
+  https://example.com --out-dir /tmp/pipelines-rag-crawl4ai-smoke \
+  --no-browser-proxy --no-pdf --keep-png --include-html --retries 1
+# HTTP 200；page.json / page.md / page.html / page.png
+
+uv run --extra webpage-crawl4ai -m parsers.rewebpage_craw \
+  https://example.com --out-dir /tmp/pipelines-rag-crawl4ai-pdf-smoke \
+  --no-browser-proxy --retries 1
+# HTTP 200；page.json / page.md / page.pdf
+
+uv run --extra webpage-firecrawl -m parsers.rewebpage_firecrawl --probe
+# HTTP 200
+
+.venv/bin/python -m parsers.static_structurer https://example.com \
+  --tool crawl4ai --out-root /tmp/pipelines-rag-static-smoke -- \
+  --no-browser-proxy --no-pdf --retries 1
+.venv/bin/python -m parsers.static_structurer https://example.com \
+  --tool scrapling --out-root /tmp/pipelines-rag-static-scrapling-smoke -- \
+  --no-proxy --include-html
+# 两者 HTTP 200；<tool>/page.* 扁平输出与 static_parse_manifest.json 均正确
+
+.venv/bin/python -m parsers.static_structurer https://example.com \
+  --tool firecrawl --out-root /tmp/pipelines-rag-static-firecrawl-no-key
+# 预期 exit 1；manifest record=failed, error=exit_code=2，失败正确向上传播
+
+.venv/bin/python -m parsers.static_structurer https://example.com \
+  --tool crawl4ai --parse-page-pdf \
+  --out-root /tmp/pipelines-rag-page-pdf-chain -- \
+  --no-browser-proxy --retries 1
+# 组合链路 OK：page.pdf 位于预期扁平路径；opendataloader 输出 3 文本元素 / 0 图片元素。
+# 说明 crawl4ai 0.9.2 原生打印 PDF 可保留文字层；Firecrawl 截图 PDF 则仍是栅格路径。
+
+uv build --wheel --out-dir /tmp/pipelines-rag-dist
+# OK；wheel 含 4 个 rewebpage 模块，METADATA 含 3 个 webpage extras
+
+uv run -m rag_pdfs.ingest_img --help
+# OK
+```
+
+环境说明：`crawl4ai-setup` 的 `playwright install --with-deps` 需要 sudo，当前会因无交互密码失败；
+改用 `uv run playwright install chromium` 成功安装浏览器，现有系统库足以完成真实 smoke。
+Firecrawl 当前未配置 key，因此未执行真实 scrape；归一化由 fake document 单测覆盖。
+
+## 20. MinerU 3.4.4 纯 CPU adapter 与首-page smoke（2026-07-16）
+
+### 20.1 改动
+
+- `parsers/redox_mineru.py` 从注释占位升级为 CPU-first CLI adapter：固定官方
+  `pipeline` 后端，支持 doctor/dry-run/page range/method/lang/formula/table/model source、
+  ONNX 与渲染线程、处理窗口、超时、`--skip-parse` 和显式 `--overwrite`。
+- 保留 MinerU 原始 `raw/`，从官方 Markdown + `*_content_list.json` 规范化为
+  `document.md / elements.jsonl / images.jsonl / parse_summary.json / images/`；复制 source，
+  图片引用相对化，归一化重复执行幂等并保留首次解析元数据。
+- `static_structurer` registry 新增 `--tool mineru`，PDF 默认仍为 opendataloader。
+- `pyproject.toml` 新增 `mineru-cpu = ["mineru[pipeline]>=3.4.3,<4"]`；新增 4 个 MinerU
+  adapter 离线测试，与 rewebpage 合计 10 tests。
+  registry 现为 7 tools。
+
+### 20.2 验证
+
+```bash
+uv sync --extra mineru-cpu --extra webpage-crawl4ai \
+  --extra webpage-firecrawl --extra webpage-scrapling
+# MinerU 3.4.4；uv pip check OK（216 packages）
+
+uv run -m parsers.redox_mineru --doctor
+# 20 CPU / 19.53 GiB RAM / 907+ GiB free / pipeline / no warnings
+
+uv run -m parsers.redox_mineru inputs/qwen-agentworld_blog.pdf \
+  --out outputs/qwen-agentworld_blog/mineru \
+  --model-source modelscope --start 0 --end 0 --method txt \
+  --no-formula --no-table --threads 4 --inter-op-threads 1 \
+  --render-threads 1 --processing-window-size 2 --overwrite
+# 首次含约 235 MiB 模型 cache：51.962s；缓存后：20.768s
+# 1 page -> 23 elements / 4 image-chart rows；MinerU local API 正常关闭
+
+uv run -m parsers.static_structurer inputs/qwen-agentworld_blog.pdf \
+  --tool mineru -- --skip-parse
+# source.pdf + static_parse_manifest.json + mineru package OK
+
+# 连续执行两次 --skip-parse 后：4 canonical images / 4 image rows / 4 Markdown refs；
+# 所有路径存在，无重复副本，txt/no-formula/no-table/20.768s 元数据保持。
+
+uvx ruff check parsers/redox_mineru.py parsers/static_structurer.py \
+  tests/test_redox_mineru.py
+uv run python -m unittest discover -s tests -v
+# All checks passed；10 tests OK
+```
+
+环境说明：Linux torch resolver 仍安装 CUDA runtime wheels，虽然 adapter 用
+`CUDA_VISIBLE_DEVICES=""` 且 MinerU `pipeline` 纯 CPU 实跑成功；当前完整 `.venv` 约
+6.0 GiB。严格 CPU-only 的小 torch 环境留待单独评估，避免本轮改动全仓库 torch 来源。
+
+## 21. 2026-08-29：RAG 顶层架构与模型运行时 M0
+
+### 目标
+
+在不改变现有 ingest/query/eval 行为的前提下，为 LangChain、LangGraph、LangSmith 技术栈建立可演进的模型与提示词边界。
+
+### 变更
+
+- 新增 model_runtime.py：声明式模型目录、角色校验、API 与本地模型工厂、缓存环境设置、embedding 索引指纹。
+- 新增 prompts.py：回答、查询改写、历史摘要提示词集中管理与版本标识。
+- 新增 configs/models.example.toml：覆盖 OpenAI 兼容 API、本地模型目录、Hugging Face 缓存、ModelScope 缓存示例。
+- query_img.py 改为导入集中管理的回答提示词，检索次数与回答逻辑不变。
+- 新增 architecture.md：记录高星 RAG 项目调研、LangGraph 有界工作流、记忆边界、LangSmith 追踪和分阶段迁移方案。
+- 新增 tests/test_model_runtime.py。
+- 新增 modelscope 可选依赖组；默认安装保持轻量，需要 cached 模式时运行 uv sync --extra modelscope。
+
+### 验证
+
+- uv run python -m unittest discover -s tests -v：17 项通过。
+- uv run python -m compileall rag_pdfs/model_runtime.py rag_pdfs/prompts.py rag_pdfs/query_img.py：通过。
+- uvx ruff check rag_pdfs/model_runtime.py rag_pdfs/prompts.py rag_pdfs/query_img.py tests/test_model_runtime.py：通过。
+- uv run -m rag_pdfs.ingest_img/query_img/eval_img --help：三条入口均通过。
+- configs/models.example.toml：成功解析 7 个模型与角色绑定。
+
+## 22. 2026-08-29：模型 composition root、索引契约与单次检索 M1
+
+### 目标
+
+把 M0 模型目录接入 canonical ingest/query/eval CLI；让持久化索引绑定 embedding contract；消除 query evidence/debug/answer 的重复检索。
+
+### 变更
+
+- 新增 runtime.py：三条 CLI 统一按 role 解析模型，支持 --model-config 或 RAG_MODEL_CONFIG；原 --api-key/--base-url/--model/--embedding-model-path 继续作为向后兼容覆盖。
+- ModelHandle 惰性实例化；dry-run 不要求云 key；同一 catalog model id 在进程内复用。
+- 新增 index_manifest.py：四个 Chroma collection 全部成功后原子写 index_manifest.json，记录 secret-free embedding contract、fingerprint 与 collection count。
+- query/eval 打开新索引时强校验 fingerprint；mismatch 拒绝。无 manifest 的 legacy 索引默认告警，--strict-index-manifest 可拒绝。
+- query 新增 RetrievedEvidence；文档、hybrid 分数、--show-evidence 与回答上下文共享同一次检索。eval 复用相同 hybrid retriever 构造。
+- configs/models.example.toml 增加 OpenAI-compatible embedding API 示例；现覆盖 API、local、Hugging Face cached、ModelScope cached。
+- README、strata.md、plan.md、architecture.md 同步 M1 使用方式与完成状态。
+
+### 验证
+
+- uv run python -m unittest discover -s tests -v：28 项通过，含真实临时 Chroma 四 collection + manifest 集成测试。
+- uvx ruff check M1 源码与测试：通过。
+- uv run python -m compileall rag_pdfs tests：通过。
+- ingest_img/query_img/eval_img --help：三条入口通过并显示 --model-config；query/eval 显示 --strict-index-manifest。
+- configs/models.example.toml：成功解析 8 个模型、7 个 role。
+- 现有 parse fixture + --skip-parse --dry-run --model-config：通过；识别 catalog:qwen_vl_api，未读取云 key、未调用 API。
+
+未执行真实 embedding 模型或回答 API 端到端调用：当前 configs/.env 未配置本地 embedding 路径；线上 key 也不用于本轮离线验证。
