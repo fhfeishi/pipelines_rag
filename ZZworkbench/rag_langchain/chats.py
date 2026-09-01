@@ -1,8 +1,9 @@
 # rag_langchain/chats.py
 
-import os 
-from configs.config import settings
+import os
 
+from configs.config import settings
+from langchain.chat_models import init_chat_model
 
 # from langchain_openai.chat_models.base import BaseChatOpenAI
 # llm = BaseChatOpenAI(
@@ -13,8 +14,6 @@ from configs.config import settings
 # response = llm.invoke("Hello, how are you?")
 # print(response)
 
-
-from langchain.chat_models import init_chat_model
 os.environ["DEEPSEEK_API_KEY"] = settings.deepseek_api_key
 llm = init_chat_model(
     model="deepseek-v4-flash",
