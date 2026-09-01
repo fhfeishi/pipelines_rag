@@ -1,0 +1,395 @@
+任务名称：基于输变电工程进度知识库，完善 LangGraph 与 Deep Agents 两套可靠 RAG 教学方案
+
+版本：需求审核稿 v2
+
+执行前请先阅读：
+
+- ZZworkbench/static_retrieve_langchain.ipynb
+- ZZworkbench/rag_langchain/text_retrieval.py
+- ZZworkbench/rag_langchain/static_rag.ipynb 中 LangGraph、Deep Agents 的概念说明
+- knowledge/project_progress/texts/v4/
+- knowledge/project_progress/evals/retrieval_v4.jsonl
+
+本任务不是制作两份框架宣传 notebook，也不是假设一个未来的大型知识库。请严格围绕仓库中现有的“输变电工程进度计划查询”小场景，解释框架设计理念，并构建、比较可验证的 RAG pipeline。
+
+一、已确认的工程事实
+
+当前 v4 知识库实际情况：
+
+- 8 份 TXT 文档；
+- 合计约 103 KB、1120 行；
+- 每份文档对应一个工程或一个工程分册；
+- 文本已被整理成半结构化任务记录，常见字段为工程名、任务标识号、父子任务、任务名、工期、计划开始、计划完成、PDF 页码；
+- 当前评测集只有 8 个单跳事实问题，主要查询某工程中某任务的开始日期、完成日期或工期；
+- 不同工程中存在大量相同或相近任务名。例如“施工准备”至少出现在江湾、黄金、三虎土建、禾益等多个文档中；
+- 工程名存在“110kV/110千伏”、是否带“珠海”、简称与全称等表达差异；
+- 部分文档包含父子任务层级，也可能存在异常工期文本，因此不能只凭相似度最高的 chunk 直接回答。
+
+由此得到的工程判断：
+
+1. 这个场景不是开放域语义搜索，而是“小型、半结构化、强实体约束”的事实查询。
+2. 语义向量检索可以补充口语改写召回，但不能单独承担工程隔离、同名任务消歧和日期正确性保证。
+3. 可靠性首先来自工程范围识别、任务词面匹配、同一任务记录字段完整性、冲突检测、引用和拒答。
+4. LangGraph 与 Deep Agents 只能编排这些可靠组件，不能把不可靠的 retriever 自动变可靠。
+5. 对当前 8 个单跳问题，直接的确定性 pipeline 应继续作为首选基线；只有复合查询才可能需要 Agent。
+
+二、交付物
+
+新增并完善：
+
+1. ZZworkbench/static_retrieve_langgraph.ipynb
+2. ZZworkbench/static_retrieve_deepagents.ipynb
+
+必要时可以新增一个小型共享模块和对应测试，用于放置两份 notebook 都要复用的查询规范化、任务记录抽取、证据校验等确定性逻辑。不要在两份 notebook 中复制两套实现，也不要大范围重构现有 text_retrieval.py。
+
+两份 notebook 面向熟悉基础 Python/RAG、但不了解这两个框架的读者。Markdown 和注释使用中文，英文术语首次出现时保留原文并解释。
+
+三、共同学习目标
+
+每份 notebook 都要清楚回答：
+
+1. 这个框架的设计理念是什么，处在 LangChain 技术栈的哪一层？
+2. 它在本知识库中负责什么，不负责什么？
+3. 为什么 dense-only 可能选错工程或同名任务？
+4. 当前知识库怎样从“能搜到”走到“有足够证据才回答”？
+5. 使用高级框架后，准确率、延迟、模型调用和调试复杂度发生了什么变化？
+6. 哪类问题应继续走简单 pipeline，哪类问题才值得进入 graph 或 agent？
+
+static_rag.ipynb 已有概念介绍，可以复用结论，但不要整段复制。新 notebook 应把抽象概念映射到实际代码、状态、工具调用和失败案例。
+
+四、共同的可靠 RAG pipeline
+
+两份 notebook 必须建立在同一个可靠检索/证据契约上。先比较，再决定是否引入框架。
+
+4.1 三条对照路径
+
+至少比较：
+
+A. dense-only：现有向量检索基线；
+B. hybrid：现有工程 metadata route + 中文 n-gram BM25 + dense + weighted RRF；
+C. reliable pipeline：查询规范化 + 工程消歧 + hybrid 候选召回 + 任务记录定位 + 字段完整性校验 + 引用/拒答。
+
+不能预设 C 一定更好，必须用实际问题和失败样例验证。
+
+4.2 查询契约
+
+将每个问题转换为可检查的 QueryIntent，至少包含：
+
+- original_query：原问题；
+- normalized_query：统一全半角、空白、110kV/110千伏等写法后的问题；
+- project_hint：工程名或工程简称；
+- task_hint：任务名称；
+- requested_fields：start_date、end_date、duration 等；
+- query_type：single_lookup、multi_lookup、ambiguous 或 unsupported；
+- diagnostics：规范化和解析说明。
+
+首版优先使用可解释的规则、标题元数据和知识库内实际别名。不要为了展示 AI 而使用 LLM 抽取一个规则已经能稳定得到的工程名和日期字段。
+
+4.3 候选召回
+
+按以下优先级处理：
+
+1. 若问题明确包含工程名，先限定到对应文档或分册；
+2. 在工程范围内优先使用任务名词面匹配/BM25；
+3. dense retrieval 用于口语改写和近义表达的补充召回；
+4. 使用现有 weighted RRF 融合，不直接相加不可比的 BM25 与向量原始分数；
+5. 没有明确工程时，只有任务在全库唯一且证据充分才可直接回答；同名任务跨工程出现时必须澄清或拒答。
+
+不要把 embedding 相似度解释成事实正确概率，也不要仅凭一个固定阈值宣称答案可靠。
+
+4.4 任务记录定位
+
+召回 chunk 后，需要在 chunk 或相邻上下文中定位完整任务记录。证据单元应尽量包含：
+
+- source/source_name；
+- document_id、chunk_id；
+- project_title；
+- page；
+- task_id、task_name；
+- parent_task/task_path（文档存在时）；
+- duration、start_date、end_date；
+- 原始证据文本；
+- dense/BM25/fused 排名信号。
+
+是否新增 record-aware chunking 必须由实际审计决定：先检查当前 character chunk 是否切断任务记录；只有发现真实失败时才实现最小改动，不能为了“高级”重做整个索引。
+
+4.5 Evidence Gate
+
+回答前执行确定性证据检查，输出 exact、ambiguous、not_found、insufficient 或 conflict：
+
+- 工程范围是否与 project_hint 一致；
+- task_name 是否与 task_hint 精确或经过已知别名匹配；
+- 请求的日期/工期字段是否出现在同一条任务记录中；
+- 父任务与子任务是否被正确区分；
+- 多个候选是否给出冲突字段；
+- 引用元数据是否完整。
+
+只有 exact 才进入确定性回答。ambiguous 应指出需要补充哪个工程或任务层级；not_found/insufficient/conflict 必须明确拒答或提示冲突。
+
+4.6 Answer Contract
+
+单条事实查询优先使用模板化回答，不要求 LLM：
+
+- 直接给出任务、开始、完成、工期中用户实际询问的字段；
+- 附 source、task_id/chunk_id 等引用；
+- 不把未请求字段和模型常识混入答案。
+
+LLM 仅用于复合结果的语言组织。LLM 只能读取已通过 Evidence Gate 的结构化证据，不能自行再次检索或补日期。
+
+五、static_retrieve_langgraph.ipynb
+
+5.1 设计理念
+
+结合当前场景解释：
+
+- LangGraph 是低层 orchestration/runtime，不是 retriever；
+- State 使每一步输入、输出和失败原因可观察；
+- Node 表示边界清晰的处理步骤；
+- Conditional Edge 把“回答、澄清、拒答、有限 fallback”变成显式控制流；
+- Checkpointer 保存线程内 graph 状态，便于恢复和调试；
+- durable execution、HITL、memory 是框架能力，但当前单次静态查询不需要全部启用。
+
+说明为什么本项目选择显式 graph，而不是无限循环的 ReAct Agent。
+
+5.2 实际 graph
+
+建议状态流：
+
+START
+  -> normalize_query
+  -> parse_intent
+  -> resolve_project
+  -> retrieve_candidates
+  -> locate_task_record
+  -> evidence_gate
+       -> exact -> format_answer -> END
+       -> ambiguous -> request_clarification -> END
+       -> not_found/insufficient 且未 fallback -> fallback_retrieve
+       -> not_found/insufficient 且已 fallback -> abstain -> END
+       -> conflict -> report_conflict -> END
+
+要求：
+
+- 最多两次 retrieval，默认一次；
+- fallback 只做已定义的别名扩展、放宽工程路由或 dense 补充召回，不能无限改写 query；
+- 不默认调用 LLM；
+- 每个 node 返回 state 更新，不依赖隐藏的全局可变状态；
+- state 只保存可序列化数据，不放 Chroma client、embedding model 或文件句柄；
+- graph 中的 Evidence Gate 与直接 pipeline 复用同一个函数，不能出现两套判定规则。
+
+5.3 必须展示的真实案例
+
+- 直接成功：从现有 8 条评测中选择一条；
+- 工程别名：例如 110kV/110千伏的规范化；
+- 真实歧义：“施工准备什么时候完成？”在多个工程中存在，不能任选一条回答；
+- 不存在任务：从语料确认不存在后，验证 not_found；
+- 父子任务：从有层级的文档选择真实案例，展示任务层级不会混淆。
+
+5.4 Checkpoint 教学
+
+使用 InMemorySaver 和 thread_id 演示 state/history。解释 checkpoint、短期会话状态和跨线程长期记忆的区别。当前知识库不需要把检索证据写入长期记忆，不引入 SQLite/Postgres。
+
+5.5 评测
+
+除原有 source_hit@k、term_hit@k 外，报告：
+
+- project_route_accuracy；
+- exact_record_match；
+- requested_field_completeness；
+- citation_accuracy；
+- ambiguity_detection；
+- abstention_accuracy；
+- 平均 retrieval 次数和 fallback 比例。
+
+与直接 reliable pipeline 比较。若准确率相同，应诚实说明 LangGraph 的收益是流程可观察、分支可测试和状态可恢复，而不是检索质量自动提升。
+
+六、static_retrieve_deepagents.ipynb
+
+6.1 设计理念
+
+结合当前场景解释：
+
+- Deep Agents 是建立在 LangChain/LangGraph 上的 opinionated agent harness；
+- 它提供长期任务规划、工具使用、上下文管理、临时文件空间和 subagent 等默认能力；
+- 它适合复杂、多步骤、路径不能完全预先写死的任务；
+- 它依赖支持 tool calling 的 LLM，因此比直接 pipeline 更慢、更贵、可预测性更低；
+- 对当前 8 个单跳事实问题，Deep Agents 通常不是合理默认方案。
+
+介绍 filesystem、skills、memory、subagents 的理念即可；不要为了展示功能而给这个小知识库开启宿主文件系统、shell、长期记忆或多个 subagent。
+
+6.2 可靠工具边界
+
+Deep Agent 不能直接访问 Chroma、原始文件或自由拼接检索逻辑。只暴露一个经过验证的只读工具，例如：
+
+lookup_project_schedule(
+    project: str,
+    task: str,
+    fields: list[str]
+) -> {
+    status,
+    records,
+    citations,
+    diagnostics
+}
+
+要求：
+
+- 工具内部调用与 LangGraph 相同的 reliable pipeline；
+- 输入字段有 schema，fields 只允许 start_date/end_date/duration；
+- k、fallback 次数等由工具内部限制，不交给 Agent 任意放大；
+- ambiguous/not_found/conflict 原样返回，Agent 不得改写为确定答案；
+- 工具输出保留 source、task_id/chunk_id 和证据文本；
+- 工具只读，不写索引、不访问 shell、不读取 .env 或无关文件。
+
+6.3 单跳问题：负责任地证明“无需 Agent”
+
+选择与基准相同的一条日期问题，比较：
+
+- 直接 reliable pipeline；
+- Deep Agent 调用工具后的结果；
+- 引用是否一致；
+- 检索次数、LLM/tool 调用次数、耗时和 token。
+
+结论必须由运行结果支持。预期应明确指出：单跳事实查询优先使用直接 pipeline。
+
+6.4 复合问题：Deep Agents 的合理用例
+
+使用完全来自现有评测数据的复合任务，例如：
+
+“汇总南溪地基基础施工的计划起止时间、黄金主体结构封顶的计划完成时间、三虎电气全站电缆敷设安装的计划起止时间，并分别给出来源；任何一项证据不足都单独标记。”
+
+该任务需要多次受控 lookup、结果核对和统一表达，适合展示 planning 与 tool orchestration。
+
+要求：
+
+- 限制最大工具调用次数；
+- 展示 Agent 计划、工具输入、结构化返回和最终引用；
+- 每个事实分别通过 Evidence Gate；
+- 不把 Agent 计划、摘要或模型记忆作为证据；
+- 一项失败不能污染其余已验证结果。
+
+6.5 为什么暂不使用 subagent/filesystem
+
+用一节短说明做工程决策：
+
+- 当前数据只有 8 文档，检索工具输出很小，不存在需要 subagent 隔离的大上下文；
+- 当前任务不产生需要文件系统管理的大型中间产物；
+- 多开 subagent 会增加调用成本和非确定性；
+- 因此首版只展示 Deep Agents 的 planning + tool calling + StateBackend；
+- 后续只有在多知识源、大结果集或长报告任务出现时，再用实际评测决定是否引入 subagent。
+
+这不是缺少功能，而是尊重当前工程规模后的选择。
+
+6.6 Agent 层评测
+
+报告：
+
+- tool_selection_accuracy；
+- tool_argument_accuracy；
+- verified_fact_coverage；
+- citation_completeness；
+- invalid_claim_count；
+- abstention/ambiguity preservation；
+- LLM 调用次数、工具调用次数、耗时和 token。
+
+检索质量仍使用共同的 retrieval 指标，不能用“Agent 最终回答看起来不错”替代评测。
+
+七、评测集补充要求
+
+保留现有 8 条正例，不能回归。新增少量、全部可从 v4 语料核验的 reliability cases：
+
+- 工程别名；
+- 无工程名且任务名跨工程重复；
+- 不存在任务；
+- 父任务/子任务消歧；
+- 同一记录的开始+完成+工期多字段查询；
+- 上述三项真实任务组成的复合查询。
+
+不要编造不存在的工程、日期或业务规则。每条新增 case 要写清 expected_status、expected_source 和适用时的 expected_fields。
+
+八、版本与环境
+
+当前项目环境已安装并验证可导入：
+
+- Python 3.12.13
+- langgraph 1.2.11
+- deepagents 0.7.8
+- langchain 1.3.18
+- langchain-core 1.6.1
+- langchain-openai 1.6.0
+
+实现必须以这些实际版本的 API 为准。notebook 不自动安装依赖，不打印 API key。Deep Agents 的 LLM 示例必须使用仓库已有的 OpenAI-compatible 配置方式和支持 tool calling 的模型；没有可用 key 时，仍应完成工具、schema、graph 和非 LLM 路径验证，并明确跳过网络调用。
+
+安装后的 pip check 目前只报告仓库原有的 kubernetes 36.0.3 与 pyyaml 6.0.2 版本约束不一致。该问题与本任务安装的两个框架无直接关系，不在本任务中顺手修改，除非它实际阻塞 notebook。
+
+九、验证要求
+
+1. 两份 notebook 均能被 nbformat 读取；
+2. 从仓库根目录和 ZZworkbench 目录启动时都能定位资源；
+3. LangGraph 无 LLM 主路径可完整执行；
+4. graph 不超过两次 retrieval，不存在开放式循环；
+5. checkpoint state 可读取且可序列化；
+6. Deep Agents 的工具 schema、只读边界和 Agent 构造可验证；
+7. 有模型条件时运行单跳和复合任务；无条件时明确记录未运行部分；
+8. dense-only、hybrid、reliable pipeline 使用同一语料和问题集比较；
+9. 原 8 条 retrieval case 不回归，并报告新增 reliability cases；
+10. 运行现有 text_retrieval 相关测试；
+11. 输出不含 API key、.env 内容、私有绝对路径或大段无关模型响应。
+
+十、验收标准
+
+- 读者能理解 LangGraph 的显式状态与控制流理念，以及 Deep Agents 的高阶 harness 理念；
+- 两份 notebook 都围绕真实输变电进度数据，不泛化成与项目无关的研究 Agent 或文件系统案例；
+- 清楚展示 dense-only 的局限，但不把向量检索描述成完全无用；
+- 工程路由、任务定位、字段校验、引用、歧义和拒答形成可测试契约；
+- LangGraph 与 Deep Agents 复用同一可靠工具/证据逻辑；
+- 简单问题明确推荐直接 pipeline，复合问题才演示 Deep Agents；
+- 没有为了展示框架强行加入 subagent、shell、长期记忆或无限 query rewrite；
+- 每项性能与可靠性结论都来自实际运行数据和失败样例。
+
+十一、非目标
+
+- 不修改 parser 或图像 ingest 流程；
+- 不把 v1-v4 混入同一个索引；
+- 不在 query 时调用 VLM；
+- 不默认接入 LangSmith Cloud、LangGraph Server、数据库 checkpointer 或宿主文件系统；
+- 不构建 Web UI、部署服务或自治代码 Agent；
+- 不把语义相似度当作事实置信度；
+- 不宣称任何高级框架会天然提高 retrieval accuracy。
+
+十二、官方参考
+
+- LangGraph overview: https://docs.langchain.com/oss/python/langgraph/overview
+- LangGraph persistence: https://docs.langchain.com/oss/python/langgraph/persistence
+- Deep Agents overview: https://docs.langchain.com/oss/python/deepagents/overview
+- Deep Agents customization: https://docs.langchain.com/oss/python/deepagents/customization
+- Deep Agents backends: https://docs.langchain.com/oss/python/deepagents/backends
+- Deep Agents subagents: https://docs.langchain.com/oss/python/deepagents/subagents
+- Frameworks, runtimes, and harnesses: https://docs.langchain.com/oss/python/concepts/products
+
+十三、自审结论
+
+本稿已按实际工程场景做以下收敛：
+
+1. 从通用 Agent 功能展示改为 8 文档进度知识库的可靠事实查询；
+2. 将语义检索降为补充召回，增加工程路由、任务记录与字段校验；
+3. 将 LangGraph 的重点从 LLM rewrite 改为显式 Evidence Gate 和有界 fallback；
+4. 将 Deep Agents 限定为复合查询编排，单跳查询保留直接 pipeline；
+5. 删除首版强制 subagent、真实 filesystem、shell、长期记忆的要求；
+6. 所有示例均来自当前 v4 文档或既有 eval，不假设不存在的数据源和业务流程；
+7. “可靠”被定义为可测的路由、记录匹配、字段完整、引用、歧义和拒答，而不是模型主观自评。
+
+十四、执行进度（2026-09-01）
+
+状态：已完成本地实现与离线验收。
+
+1. 已新增共享可靠查询模块，完成 8 文档、63 chunks、541 条任务记录的解析与引用审计；
+2. 已新增 5 条 reliability cases，覆盖工程别名、跨工程同名歧义、不存在任务、父任务和多字段查询；
+3. 原 8 条 retrieval cases 与新增 5 条 reliability cases 均通过，共 16 项单元测试通过；
+4. `static_retrieve_langgraph.ipynb` 已完成，并从仓库根目录、ZZworkbench 两种启动位置整本执行；
+5. LangGraph 13 条案例全部通过，检索次数不超过 2，checkpoint state 可序列化；
+6. `static_retrieve_deepagents.ipynb` 已完成，并从两种启动位置在强制禁网条件下整本执行；
+7. Deep Agents 的工具 schema、只读 Evidence Gate、HarnessProfile、StateBackend、工具调用上限和 Agent 构造已验证；
+8. 单跳直接 pipeline 与工具返回同一记录；复合任务的 3 项真实事实及独立引用均已确定性验证；
+9. 外部模型调用未执行：本地存在 key，但没有单独的数据出站授权。notebook 仅在显式设置 `RUN_DEEPAGENTS_NETWORK=1` 时运行网络评测；
+10. `pip check` 仍只报告原有的 kubernetes 36.0.3 / pyyaml 6.0.2 约束不一致，本任务未修改该无关依赖。

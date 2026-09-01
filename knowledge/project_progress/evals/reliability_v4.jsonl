@@ -1,0 +1,5 @@
+{"id":"alias-gold-kv","query":"珠海110kV黄金输变电工程的主体结构封顶计划什么时候完成？","expected_status":"exact","expected_source":"110kV黄金输变电工程三级进度计划.txt","expected_fields":{"end_date":"2024年10月24日"}}
+{"id":"ambiguous-construction-preparation","query":"施工准备什么时候完成？","expected_status":"ambiguous"}
+{"id":"missing-nanxi-boiler","query":"南溪输变电工程的锅炉点火计划什么时候完成？","expected_status":"not_found"}
+{"id":"node-parent-pile-test","query":"110千伏节点计划中父任务试桩什么时候完成？","expected_status":"exact","expected_source":"110千伏节点计划-重点关注.txt","expected_fields":{"end_date":"2028年2月29日"}}
+{"id":"nanxi-all-fields","query":"南溪旅游输变电工程的地基基础施工计划开始、完成和工期分别是什么？","expected_status":"exact","expected_source":"南溪三级进度.txt","expected_fields":{"start_date":"2025年8月2日","end_date":"2025年10月22日","duration":"82工作日"}}
