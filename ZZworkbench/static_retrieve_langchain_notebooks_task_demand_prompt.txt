@@ -1,0 +1,547 @@
+任务名称：简化并重新分工 LangChain Level 1 / Level 1a / LangChain / LangGraph 四份静态检索 notebook
+
+版本：需求审核稿 v1
+
+状态：已执行完成并通过验收。
+
+目标文件：
+
+1. ZZworkbench/static_retrieve_langchain_level1.ipynb
+2. ZZworkbench/static_retrieve_langchain_level1a.ipynb
+3. ZZworkbench/static_retrieve_langchain.ipynb
+4. ZZworkbench/static_retrieve_langgraph.ipynb
+
+
+一、任务目标
+
+围绕仓库现有的工程进度 TXT 数据，重新整理四份 notebook 的职责和实现，使它们：
+
+- 每份 notebook 都能从头到尾独立运行；
+- 当前 notebook 用到的项目示例代码都直接放在该 notebook 中；
+- 不再依赖项目内隐藏实现或另一个 notebook 的运行状态；
+- 只保留对学习目标和实际查询可靠性有贡献的代码；
+- 避免 class、dataclass、wrapper、序列化层、持久化索引合同和多层调用链的无意义叠加；
+- 用真实数据和少量真实问题验证，不用单个精心选择的示例宣称“可靠”；
+- 明确区分朴素检索基线、工程领域特化、LangChain 接口教学和 LangGraph 编排教学。
+
+“全部代码放在 notebook”指本任务自己的加载、切分、BM25、融合、路由、证据判断和示例逻辑。不要复制 LangChain、rank_bm25、sentence-transformers 或 LangGraph 的框架源码；这些仍作为正常第三方依赖导入。
+
+
+二、必须尊重的当前工程事实
+
+2.1 数据与模型
+
+- 语料目录是 knowledge/project_progress/texts/v4，不是 txts/v4；
+- 当前有 8 份工程进度 TXT；
+- 语料是小型、半结构化、强工程名/任务名约束的数据，不是开放域百科；
+- embedding 模型名称：
+  iic--nlp_gte_sentence-embedding_chinese-base
+- 本地模型目录：
+  /mnt/e/local_models/embedding/iic--nlp_gte_sentence-embedding_chinese-base
+- 使用类名 HuggingFaceEmbeddings，不是 HuggingfaceEmbedding；
+- 使用 InMemoryVectorStore(embedding=embed_model)，参数名不是 embeddings；
+- BM25 使用 rank_bm25.BM25Okapi；
+- TXT 文件必须 sorted 后读取，不依赖文件系统返回顺序；
+- 不需要 LLM，不需要 API key。
+
+2.2 当前文件状态
+
+执行时必须从用户最新版本继续，不得用旧 notebook 或历史摘要覆盖：
+
+- static_retrieve_langchain_level1.ipynb 是用户新写的朴素版本，目前未完成；
+- static_retrieve_langchain_level1a.ipynb 是用户正在修改的工程进度特化版本；
+- static_retrieve_langchain.ipynb 和 static_retrieve_langgraph.ipynb 是现有配套版本；
+- 工作区允许存在用户未提交修改，不得还原或覆盖无关文件。
+
+2.3 当前实现中已观察到的问题
+
+static_retrieve_langchain_level1.ipynb：
+
+- 目前依赖 ../staticA/configs.py，不是独立 notebook；
+- list[Path](texts_root_v4.iterdir()) 是错误写法，应改为 sorted(texts_root_v4.glob("*.txt"))；
+- InMemoryVectorStore(embeddings=embed_model) 参数名错误；
+- 有两个空代码单元；
+- 只完成了加载、切分和建库，尚未形成可观察的基础检索对照；
+- Markdown 说明不足，读者看不出哪些行为属于 VectorStore，哪些属于 Retriever。
+
+static_retrieve_langchain_level1a.ipynb：
+
+- 已包含完整、可靠的领域 pipeline 思路；
+- 但关键实现隐藏在 ZZworkbench.project_progress_reliable 和
+  ZZworkbench.rag_langchain.text_retrieval 中；
+- 又额外定义 RoutedChineseBM25、Level1Retrieval、run_level1 等包装层；
+- QueryIntent、ReliableQueryResult、RetrievalHit、知识库 class 和 wrapper 形成较深调用链；
+- 对教学 notebook 来说，读者需要在多个文件之间跳转才能理解一次查询；
+- 需要保留领域可靠性，但改成少量、平铺、顺序清楚的函数和普通 dict。
+
+static_retrieve_langchain.ipynb：
+
+- 同时承担语料审计、持久化 Chroma、索引 manifest、Dense、BM25、RRF、评测和 Tool；
+- 主要逻辑由 text_retrieval.py 提供，notebook 本身更像调用展示；
+- 开头多个大型 ASCII 图重复表达层次关系；
+- 对“LangChain Retriever 接口教学”而言范围过宽；
+- 本轮应聚焦 VectorStore → Retriever → Runnable/Tool 的边界，不承担生产索引系统设计。
+
+static_retrieve_langgraph.ipynb：
+
+- 当前 graph 拆出约十余个 node/helper，并包含 serialize/deserialize、fallback、
+  多个终止节点、checkpoint 和完整评测包装；
+- 对当前单次静态查询，控制流比实际问题更复杂；
+- LangGraph 的 State、Node、Edge、Conditional Edge 仍有教学价值；
+- 本轮应缩成最小可解释 graph，不用框架复杂度模拟一个本来可以直接调用的函数。
+
+
+三、统一的简化原则
+
+3.1 Notebook 自包含
+
+四份 notebook 都不得导入下列项目内实现：
+
+- from configs import ...
+- from ZZworkbench.project_progress_reliable import ...
+- from ZZworkbench.rag_langchain.text_retrieval import ...
+- 另一个 ipynb 中定义的变量或函数
+
+允许直接读取：
+
+- knowledge/project_progress/texts/v4/*.txt
+- knowledge/project_progress/evals/retrieval_v4.jsonl
+- knowledge/project_progress/evals/reliability_v4.jsonl
+
+允许导入：
+
+- Python 标准库；
+- langchain_core；
+- langchain_text_splitters；
+- langchain_huggingface；
+- rank_bm25；
+- langgraph；
+- 当前 notebook 实际使用的其他已安装 LangChain 官方包。
+
+3.2 简单路径配置
+
+只支持两种实际启动位置：
+
+- 仓库根目录；
+- ZZworkbench 目录。
+
+用几行直接判断当前目录即可，不建立通用仓库发现框架，不修改 sys.path，不导入私有 configs.py。
+
+所有展示给用户的 source 优先使用相对路径或 source_name；输出中不要打印用户主目录绝对路径。
+
+3.3 控制抽象数量
+
+- 函数只有在被复用、需要单独测试，或其名字能明确表达一个业务阶段时才定义；
+- 一次使用且少于约 10 行的展示逻辑直接写在代码单元中；
+- 不为返回三组 list 创建 dataclass；
+- 不为一份 BM25 index 创建只有一个 search 方法的业务 class；
+- 普通 dict 足以表达 QueryIntent、record、trace 和 result 时，不创建数据 class；
+- 不出现“函数 A 只调用函数 B，函数 B 只包装函数 C”的调用链；
+- 不使用隐藏全局可变状态；
+- 允许 notebook 之间有少量重复代码，自包含和可读性优先于为了 DRY 再抽共享模块。
+
+3.4 控制工程范围
+
+本轮不做：
+
+- 新增共享 Python 模块；
+- 大范围修改现有 text_retrieval.py 或 project_progress_reliable.py；
+- 持久化 Chroma/Qdrant/FAISS 索引；
+- 索引 manifest、缓存失效协议或生产部署设计；
+- LangSmith tracing；
+- LLM query rewrite、Self-Query、Multi-Query、Agent 或 Deep Agents；
+- 无限 fallback、自动反思、长期 memory；
+- 为了演示而生成新语料或新业务假设。
+
+3.5 正确解释检索分数
+
+- 当前 InMemoryVectorStore 使用 cosine similarity，with_score 分数越大越相关；
+- search_type 不负责选择 Cosine / Inner Product / L2，具体度量由 VectorStore 实现决定；
+- Retriever.invoke 通常只返回 Document，with_score 是 VectorStore 级调试接口；
+- BM25 score 与 cosine score 不在同一尺度，不直接线性相加；
+- RRF 使用排名融合；
+- 当前安装版 InMemoryVectorStore 没有实现 relevance-score 映射，
+  similarity_score_threshold retriever 调用会抛 NotImplementedError；
+- 本轮如演示阈值，使用 similarity_search_with_score 后按原始 cosine 手动过滤，并明确这是当前实现相关行为；
+- 阈值必须由当前模型、当前语料和标注样例校准，不能写成通用常数。
+
+
+四、四份 notebook 的明确分工
+
+4.1 static_retrieve_langchain_level1.ipynb
+
+定位：朴素、通用的基础检索基线。
+
+目标读者：刚了解 Document、chunk、embedding、VectorStore 和 Retriever，希望看到最短可运行路径的人。
+
+要求：
+
+1. 保留用户当前“一个 notebook 包含全部代码”的方向；
+2. 使用当前 v4 TXT 作为示例数据，但不写工程别名表，不解析任务父子层级，
+   不实现工程进度专用 ScheduleRecord/Evidence Gate；
+3. 文档 metadata 只保留通用字段，例如：
+   source、source_name、version、document_id、chunk_id、start_index；
+4. 用 RecursiveCharacterTextSplitter 做普通中文友好切分；
+5. 用 HuggingFaceEmbeddings + InMemoryVectorStore 建立内存向量库；
+6. 演示以下基础接口并解释返回值：
+   - add_documents
+   - similarity_search
+   - similarity_search_with_score
+   - similarity_search_by_vector
+   - get_by_ids
+7. 用 as_retriever 演示：
+   - similarity：k、filter；
+   - mmr：k、fetch_k、lambda_mult、filter；
+8. 用一个短单元演示当前版本的手动 cosine threshold，不构造会报错的 threshold retriever；
+9. 直接使用 BM25Okapi，展示中文直接 split 的问题和一个简单混合中文 tokenizer；
+10. 用一个短函数完成普通 RRF 或 weighted RRF；
+11. 用 2 至 3 个真实问题并排展示 dense、BM25、RRF 的 top-k 来源；
+12. 最终输出是检索候选和来源，不宣称已经完成事实级问答。
+
+不得出现：
+
+- 工程别名 route；
+- 父子任务规则；
+- 正则解析工期/日期；
+- exact/ambiguous/not_found 等领域状态；
+- ProjectProgressKnowledgeBase；
+- 持久化索引；
+- Agent Tool。
+
+建议结构：
+
+1. 范围说明；
+2. 导入与路径；
+3. 加载 Document；
+4. 切分；
+5. embedding 与 InMemoryVectorStore；
+6. VectorStore 基础 API；
+7. similarity/MMR retriever；
+8. 中文 BM25；
+9. RRF；
+10. 少量真实查询对照；
+11. 基线结论。
+
+
+4.2 static_retrieve_langchain_level1a.ipynb
+
+定位：只针对当前工程进度知识库的可靠检索特化版。
+
+目标读者：已经看过 level1，希望理解为什么通用相似度检索不足以安全回答工程日期的人。
+
+必须保留的业务流程：
+
+查询规范化
+→ 工程 metadata route
+→ 中文 BM25
+→ Dense 补充
+→ Weighted RRF
+→ 完整任务记录定位
+→ Evidence Gate
+→ 引用回答或拒答
+
+必须内联到 notebook 的最小代码：
+
+1. 读取并切分 v4 TXT；
+2. 生成稳定 document_id/chunk_id；
+3. normalize_query；
+4. 基于当前 8 个 source_name 的最小工程别名映射；
+5. 从当前文本格式解析完整任务记录；
+6. 中文 mixed tokenizer；
+7. BM25 搜索；
+8. Dense with_score 搜索；
+9. weighted_rrf；
+10. 单个 query_schedule 或 answer_query 编排函数；
+11. Evidence Gate；
+12. JSONL 评测读取与简短评测循环。
+
+数据结构要求：
+
+- QueryIntent 使用普通 dict；
+- task record 使用普通 dict；
+- retrieval trace 使用普通 dict；
+- result 使用普通 dict；
+- 不定义 ProjectProgressKnowledgeBase、RoutedChineseBM25、Level1Retrieval、
+  ReliableQueryResult 等 class/dataclass；
+- BM25 模型、chunks、records 可以是 notebook 顺序执行后产生的只读变量；
+- 每个阶段最多一层清晰函数，不再套 adapter/wrapper。
+
+Evidence Gate 至少覆盖：
+
+- 没有识别到任务；
+- 工程范围内没有记录；
+- 同名任务跨工程歧义；
+- 同一文档有多个父子层级记录；
+- 请求字段缺失；
+- source_name、task_id、chunk_id 不完整；
+- 唯一记录所在 chunk 没有出现在本次 fused top-k；
+- exact 才输出模板化事实与引用；
+- 其他情况返回 ambiguous、not_found 或 insufficient。
+
+领域优化必须有实际依据：
+
+- 工程别名只写当前文档真实存在的别名；
+- 不构造不存在的组织、权限、用户、数据库等 metadata；
+- 不把 embedding 相似度当正确概率；
+- 不为了“高级”加入 LLM rewrite；
+- 若完整任务记录已经能映射到现有 chunk，不重做复杂 parent-child/multi-vector 索引。
+
+验证：
+
+- 运行 retrieval_v4.jsonl；
+- 运行 reliability_v4.jsonl；
+- 报告通过数和失败明细；
+- 当前样例若 13/13 通过，只能称为本知识库防回归结果，不能称为通用 RAG 准确率；
+- 保留“错误 chunk 导致 Evidence Gate 拒答”的最小反例，但用 1 个短单元完成。
+
+
+4.3 static_retrieve_langchain.ipynb
+
+定位：LangChain Retriever 接口与组件边界教学，不再承担完整生产 RAG 设计。
+
+要回答的问题：
+
+1. VectorStore 与 Retriever 有什么区别？
+2. 为什么 Retriever 是 Runnable，而 VectorStore 不是？
+3. as_retriever 的 similarity 与 mmr 如何配置？
+4. 为什么 with_score 通常在 VectorStore 层调用？
+5. 如何把一个已经验证的 retriever 暴露成 tool？
+6. LangChain 编排不会自动提高底层召回质量。
+
+要求：
+
+- 开头只保留一个简短流程图或一张表，不保留多个大型 ASCII 图；
+- notebook 自己完成最小数据加载、切分、embedding 和 InMemoryVectorStore；
+- 不使用 Chroma、索引 manifest、audit_text_corpus、build_or_reuse_chroma；
+- 直接展示 vector_store.as_retriever(...).invoke(...)；
+- 展示 similarity 和 MMR 即可；
+- with_score 直接调用 VectorStore；
+- 如需展示自定义 hybrid Retriever，优先使用一个短的 RunnableLambda/chain，
+  不实现 BaseRetriever 子类和 callback 生命周期；
+- create_retriever_tool 只作为最后一个很薄的适配示例；
+- 不启动 Agent，不调用 LLM；
+- Tool 只证明接口可以构造和调用，不再次复制完整 Evidence Gate；
+- 高级 Retriever（MultiQuery、SelfQuery、ContextualCompression、
+  ParentDocument、MultiVector）只用简短表格说明适用条件，本轮不全部实现。
+
+与 level1 的区别：
+
+- level1 讲基础检索算法和结果；
+- static_retrieve_langchain 讲这些能力如何落到 LangChain 的
+  VectorStore、Retriever、Runnable、Tool 接口；
+- 不重复 level1a 的工程专用完整任务解析与 Evidence Gate。
+
+
+4.4 static_retrieve_langgraph.ipynb
+
+定位：用最小 graph 解释 LangGraph 的编排价值，不把简单查询包装成复杂状态机。
+
+保留的概念：
+
+- State；
+- Node；
+- Edge；
+- Conditional Edge；
+- compile/invoke；
+- 框架只编排，不改善 retriever。
+
+核心 graph 最多保留四个节点：
+
+START
+→ retrieve
+→ evidence_gate
+→ answer 或 refuse
+→ END
+
+实现要求：
+
+- 查询规范化和 metadata filter 可以直接放在 retrieve node 中；
+- state 使用一个小型 TypedDict；
+- state 只保留 question、normalized_query、hits、status、answer、
+  citations 等确实会跨节点使用的字段；
+- hits 直接保存简化后的普通 dict，不实现 serialize_hit + deserialize_hit 双向适配；
+- evidence_gate 只做一次明确判断；
+- answer/refuse 使用条件边展示分支；
+- 不实现 fallback_retrieve；
+- 不实现多个 exact/ambiguous/not_found/conflict 专用终止节点；
+- 不实现无限循环、query rewrite、Agent；
+- 默认不使用 checkpointer；
+- 若保留 InMemorySaver，只放在核心 graph 之后的独立小节，用一个 thread_id
+  演示状态快照，不把 checkpoint 变成主流程依赖；
+- 用 success、ambiguous/not_found 两到三个真实问题展示路径；
+- 将 graph 输出与同一 notebook 中的直接函数输出对比，事实和引用应一致；
+- 明确结论：当前单跳查询默认仍应调用直接 pipeline，LangGraph 仅在确有分支、
+  恢复、人工审核或多步骤状态需求时才值得引入。
+
+与 level1a 的关系：
+
+- 可以在本 notebook 内放置一个缩短版、可读的检索函数；
+- 不导入 level1a，也不导入项目共享模块；
+- 不必复制 level1a 的全部 13 条评测和所有领域规则；
+- 只复制 graph 示例真正需要的最小数据加载、检索和证据判断。
+
+
+五、代码与注释风格
+
+- Markdown 和注释使用中文；
+- 英文术语第一次出现时给出英文全称或一句中文解释；
+- 一段 Markdown 只解释紧随其后的代码，不写长篇框架宣传；
+- 代码按 notebook 从上到下自然执行；
+- 删除空代码单元；
+- 删除仅为打印漂亮 trace 而存在的复杂对象；
+- 输出只显示计数、文件名、chunk_id、简短文本、分数和最终状态；
+- 长文本统一截断；
+- 不输出绝对 home 路径；
+- 不保存 API key、环境变量值或大段模型加载日志；
+- 保留必要类型标注，但不为类型标注牺牲 notebook 可读性；
+- 不使用未经解释的魔法数字；k、fetch_k、lambda_mult、RRF 权重集中在示例附近说明；
+- 不把当前小评测集的结果描述成泛化能力。
+
+
+六、实施顺序
+
+1. 保存当前四份 notebook 的结构摘要，确认用户最新改动；
+2. 先修 static_retrieve_langchain_level1.ipynb：
+   建立可运行的朴素基线；
+3. 再简化 static_retrieve_langchain_level1a.ipynb：
+   内联必要领域逻辑并去掉多层对象包装；
+4. 再收敛 static_retrieve_langchain.ipynb：
+   聚焦 LangChain 接口；
+5. 最后简化 static_retrieve_langgraph.ipynb：
+   用最小 graph 包装已经理解的检索/证据步骤；
+6. 每完成一份立即 Restart & Run All，不要等四份全部编辑后才测试；
+7. 全部完成后从仓库根目录和 ZZworkbench 目录各复跑一次；
+8. 检查 git diff，确认没有修改无关文件。
+
+
+七、验收标准
+
+共同验收：
+
+- 四份 notebook 均为合法 nbformat；
+- 每份都能独立 Restart & Run All；
+- 从仓库根目录运行通过；
+- 从 ZZworkbench 目录运行通过；
+- 0 个 error output；
+- 0 个空代码单元；
+- 不导入 staticA/configs.py；
+- 不导入 project_progress_reliable.py；
+- 不导入 rag_langchain/text_retrieval.py；
+- 不依赖另一个 notebook 的执行状态；
+- 不新增共享 Python 模块；
+- 不修改无关文件；
+- 已保存输出不含 API key 和用户 home 绝对路径。
+
+level1 验收：
+
+- 能加载 8 个 TXT；
+- 能切分并建立 InMemoryVectorStore；
+- similarity、with_score、by_vector、get_by_ids 可运行；
+- similarity retriever 与 MMR retriever 可运行；
+- 中文 BM25 与 RRF 可运行；
+- 不包含工程进度专用规则；
+- 输出明确标记为候选召回，不冒充最终事实答案。
+
+level1a 验收：
+
+- 全部领域代码在 notebook 内；
+- query → route → BM25 → dense → RRF → record → gate → answer/refuse 可观察；
+- exact 输出 source_name、task_id、chunk_id，存在 page 时也输出 page；
+- ambiguous/not_found/insufficient 不输出猜测日期；
+- retrieval_v4 与 reliability_v4 都执行；
+- 打印失败明细；
+- 当前已知评测不因简化而退化。
+
+static_retrieve_langchain 验收：
+
+- 清楚区分 VectorStore、Retriever、Runnable、Tool；
+- 主流程不使用持久化 Chroma；
+- 不实现 Agent；
+- 组件示例短而可运行；
+- 高级组件只解释，不为展示而堆实现。
+
+static_retrieve_langgraph 验收：
+
+- 核心 graph 不超过四个节点；
+- 至少有一条 conditional edge；
+- 无 fallback 循环；
+- 无隐藏项目模块；
+- graph 与直接函数对相同问题给出一致事实/引用或一致拒答；
+- 明确说明 graph 的收益是流程编排与可观察性，不是检索准确率自动提升。
+
+
+八、进度记录要求
+
+在执行任务时维护以下 checklist，完成一个步骤就立即更新，不要最后一次性全勾：
+
+[x] 已盘点并保留用户最新 notebook
+[x] level1 已简化并首次运行
+[x] level1 已通过两种工作目录复跑
+[x] level1a 已内联领域代码并去除多层包装
+[x] level1a 已运行两组 JSONL 评测
+[x] level1a 已通过两种工作目录复跑
+[x] static_retrieve_langchain 已聚焦接口教学
+[x] static_retrieve_langchain 已通过两种工作目录复跑
+[x] static_retrieve_langgraph 已缩为最小 graph
+[x] static_retrieve_langgraph 已验证成功与拒答分支
+[x] static_retrieve_langgraph 已通过两种工作目录复跑
+[x] 已检查 notebook error outputs、空单元、私有路径和 secrets
+[x] 已检查 git diff，未改动无关文件
+
+每份 notebook 完成后记录：
+
+- 单元数量与代码单元数量；
+- 文档数、chunk 数；
+- 执行是否通过；
+- 关键样例结果；
+- 评测通过数；
+- 发现并修正的真实问题；
+- 未验证项及原因。
+
+
+九、自审结论
+
+本需求稿已做以下取舍：
+
+1. “全部代码在 notebook”与 DRY 有冲突。本任务选择 notebook 独立可读，允许少量重复，
+   但禁止再抽共享模块制造跳转。
+2. level1 保持朴素，因此不承担工程日期事实正确性；只输出候选和来源。
+3. level1a 保留领域 route、完整任务记录和 Evidence Gate。这些不是过度设计，
+   而是当前知识库中处理同名任务和日期归属的必要约束。
+4. static_retrieve_langchain 只讲框架接口，不再同时建设持久化索引系统。
+5. static_retrieve_langgraph 保留一个条件分支来体现框架设计，但删除 fallback、
+   多终止节点和大规模状态适配。
+6. 当前 13 条样例只作为本知识库防回归，不据此声称方案具有通用可靠性。
+7. 本轮不包含 Deep Agents；若后续继续，应在直接 pipeline 和最小 graph 稳定后单独处理。
+
+审核重点：
+
+- 是否同意 level1 只做到“候选检索”，不承担领域 Evidence Gate；
+- 是否同意 level1a 保留领域可靠性，但改用普通 dict + 少量函数；
+- 是否同意 static_retrieve_langchain 取消持久化 Chroma 主流程；
+- 是否同意 static_retrieve_langgraph 核心限制为四个节点且取消 fallback。
+
+
+
+十、执行记录（2026-09-03）
+
+- static_retrieve_langchain_level1.ipynb：
+  22 个单元、10 个代码单元；8 个文档、88 个通用 chunk；
+  VectorStore 基础接口、similarity/MMR、手动 threshold、中文 BM25 和 RRF 均运行通过。
+- static_retrieve_langchain_level1a.ipynb：
+  25 个单元、12 个代码单元；8 个文档、63 个 chunk、541 条任务记录，
+  0 条记录失去 chunk 映射；两组 JSONL 合计 13/13 通过；
+  强制漏召回证据时返回 insufficient。
+- static_retrieve_langchain.ipynb：
+  16 个单元、7 个代码单元；VectorStore with_score、
+  VectorStoreRetriever similarity/MMR、Runnable batch、中文 BM25Retriever
+  和 create_retriever_tool 均运行通过。
+- static_retrieve_langgraph.ipynb：
+  19 个单元、9 个代码单元；核心图只有 retrieve、evidence_gate、
+  answer、refuse 四个节点；success 进入 answer，ambiguous/not_found 进入 refuse；
+  三条 graph 结果与直接函数一致。
+- 四份 notebook 均从仓库根目录和 ZZworkbench 目录执行通过。
+- 四份 notebook 均为 0 空代码单元、0 error output、0 项目内隐藏导入、
+  0 Chroma、0 dataclass；已保存输出不含用户 home 路径或 API key 痕迹。
+- tests.test_project_progress_reliable：9 个测试通过。
+- git 差异只包含四份目标 notebook 和本 task-demand prompt。
