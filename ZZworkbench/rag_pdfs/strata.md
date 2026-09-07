@@ -1,3 +1,5 @@
+> 针对通用`pdf文档`的解析
+
 # rag_pdfs 产品章程
 
 > 仓库级分层与优先级见根目录 [`strata.md`](../strata.md)。
