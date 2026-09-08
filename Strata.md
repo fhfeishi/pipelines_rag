@@ -1,5 +1,6 @@
-# pipelines-rag 启动章程
+> pipelines-rag 启动章程
 
+-----
 > 本文件是仓库级 canonical charter。PDF 图片 RAG 产品细节见 [`rag_pdfs/strata.md`](rag_pdfs/strata.md)；
 > 职业规划与 agent 成长路线见 [`agent_rag_growth_roadmap.md`](agent_rag_growth_roadmap.md)。
 

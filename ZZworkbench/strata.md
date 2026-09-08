@@ -1,3 +1,92 @@
+> RAG Solutions pipeline<br>
+`RAG = Retrieval + ContextConstruction + Generation`
+---
+```html
+External Knowledge
+      ↓
+Index / Organize
+      ↓
+Retrieve
+      ↓
+Select / Rerank / Reason
+      ↓
+Context Construction
+      ↓
+LLM Generation
+```
+------
+`RAG Retrieval Taxonomy`
+
+1. Lexical Retrieval
+   - tokenizer / analyzer
+   - inverted index
+   - BM25
+   - exact-term / sparse retrieval
+
+2. Dense / Vector Retrieval
+   - embedding models
+     - text
+     - vision
+     - multimodal
+     - document / section / chunk granularity
+   - vector store
+   - ANN index
+     - HNSW
+     - IVF
+     - Flat
+   - similarity
+     - cosine
+     - dot product
+     - L2
+   - key limitation:
+     semantic similarity ≠ relevance
+
+3. Structured Retrieval
+   - metadata filtering
+   - SQL / structured query
+   - B-tree / Hash indexes
+
+4. Graph Retrieval
+   - entity / relation graph
+   - graph traversal
+   - multi-hop retrieval
+   - community-level retrieval
+   - GraphRAG / LightRAG
+   - often combined with vector retrieval
+
+5. Reasoning / Structure-aware Retrieval
+   - hierarchical document index
+   - tree search
+   - LLM-guided retrieval
+   - PageIndex
+
+`Orthogonal System Architectures`
+
+- Hybrid RAG
+  lexical + dense + metadata + reranking
+
+- Graph RAG
+  graph representation + graph/vector/text retrieval
+
+- Multimodal RAG
+  text / image / audio / video retrieval
+
+- Agentic RAG
+  LLM plans and iteratively selects retrieval tools
+
+`Knowledge Representation / Knowledge Packaging`
+- LLM Wiki
+- Google Open Knowledge Format (OKF)
+- Markdown / structured knowledge bundles
+
+
+
+
+
+
+
+
+-------
 > 视觉信息（如图像）嵌入到 RAG_pipeline
 step1:图像到知识库文本，保存、映射，图像跟与之关联的知识库文本建立`链接`。存，只发生一次。
 step2:答案文本到图文输出展示，检索、排版。
