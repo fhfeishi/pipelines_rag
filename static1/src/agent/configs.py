@@ -1,10 +1,12 @@
-# staticA/configs.py
+# staticA/src/agent/configs.py
+""" chared configurations for all agents. """
+
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # =======================================================================
@@ -46,10 +48,10 @@ emnedding_model_name: list(str) = ["qwen3_embedding_06b", "gte_embedding_base", 
 
 
 class Settings(BaseSettings):
-    dashscope_api_key: str = Field(default="", description="DashScope API key (VLM captioning via compatible-mode)")
-    deepseek_api_key: str = Field(default="", description="DeepSeek API key (query/eval LLM, optional caption backend)")
-    mineru_api_key: str = Field(default="", description="MinerU API key (file parse)")
-    langsmith_api_key: str = Field(default="", description="LangSmith API key")
+    dashscope_api_key: SecretStr = Field(default="", description="DashScope API key (VLM captioning via compatible-mode)")
+    deepseek_api_key: SecretStr = Field(default="", description="DeepSeek API key (query/eval LLM, optional caption backend)")
+    mineru_api_key: SecretStr = Field(default="", description="MinerU API key (file parse)")
+    langsmith_api_key: SecretStr = Field(default="", description="LangSmith API key")
     qwen3_embedding_06b_path: str = Field(default="", description="Local Qwen--Qwen3-embedding-0.6B model path ")
     gte_embedding_base_path: str = Field(default="", description="Local iic--gte-embedding-base  model path ")
     gte_embedding_large_path: str = Field(default="", description="Local iic--gte-embedding-large model path ")
