@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>static1 · LangChain 文档助手</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">L</div>
+          <div>
+            <strong>static1</strong>
+            <span>Personal Chat LangChain</span>
+          </div>
+        </div>
+        <button class="new-chat" id="new-chat" type="button">＋ 新建对话</button>
+        <div class="side-card">
+          <div class="side-card-title">当前配置</div>
+          <div class="status-row"><span class="status-dot" id="status-dot"></span><span id="status-text">正在检查服务…</span></div>
+          <div class="model-label" id="model-label">DeepSeek</div>
+        </div>
+        <div class="side-footer">文档来源：LangChain 官方文档</div>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">DOCUMENTATION ASSISTANT</div>
+            <h1>和 LangChain 文档一起思考</h1>
+          </div>
+          <div class="top-actions">
+            <button class="ghost-button" id="refresh-docs" type="button">更新文档</button>
+            <button class="ghost-button" id="clear-chat" type="button">清空会话</button>
+          </div>
+        </header>
+
+        <section class="chat-area" id="chat-area">
+          <div class="welcome" id="welcome">
+            <div class="welcome-icon">✦</div>
+            <h2>今天想了解什么？</h2>
+            <p>我会先检索 LangChain 官方文档，再用 DeepSeek 整理答案。</p>
+            <div class="suggestions">
+              <button type="button" data-prompt="LangChain 里如何快速创建一个可以调用工具的 agent？">如何创建一个 agent？</button>
+              <button type="button" data-prompt="请用一个最小示例解释 LangChain 的 RAG 流程。">解释 RAG 流程</button>
+              <button type="button" data-prompt="LangChain 的 streaming API 应该怎么使用？">如何使用流式输出？</button>
+            </div>
+          </div>
+        </section>
+
+        <form class="composer" id="composer">
+          <textarea id="message-input" rows="1" placeholder="询问 LangChain、LangGraph 或 LangSmith…" autocomplete="off"></textarea>
+          <button class="send-button" id="send-button" type="submit" aria-label="发送">↑</button>
+          <div class="composer-hint">Enter 发送 · Shift + Enter 换行</div>
+        </form>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>
