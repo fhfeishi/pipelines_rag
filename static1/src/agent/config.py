@@ -1,48 +1,49 @@
-"""Runtime configuration for the personal LangChain docs assistant."""
-
-from __future__ import annotations
+"""Configuration shared by local parsing, API models and the agent."""
 
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 STATIC1_ROOT = Path(__file__).resolve().parents[2]
+KNOWLEDGE_ROOT = STATIC1_ROOT.parent / "knowledge"
 
 
 class Settings(BaseSettings):
-    """Environment-backed settings with safe local defaults."""
-
-    deepseek_api_key: SecretStr | None = Field(default=None, validation_alias="DEEPSEEK_API_KEY")
-    deepseek_base_url: str = Field(
+    model_name: str = Field(
+        default="deepseek-chat", validation_alias=AliasChoices("MODEL_NAME", "DEEPSEEK_MODEL")
+    )
+    model_base_url: str = Field(
         default="https://api.deepseek.com",
-        validation_alias="DEEPSEEK_BASE_URL",
+        validation_alias=AliasChoices("MODEL_BASE_URL", "DEEPSEEK_BASE_URL"),
     )
-    deepseek_model: str = Field(default="deepseek-chat", validation_alias="DEEPSEEK_MODEL")
-    docs_request_timeout: float = Field(default=20.0, validation_alias="DOCS_REQUEST_TIMEOUT")
-    docs_max_pages: int = Field(default=8, validation_alias="DOCS_MAX_PAGES")
-    docs_cache_path: Path = Field(
-        default=STATIC1_ROOT / "data" / "langchain_docs.json",
-        validation_alias="DOCS_CACHE_PATH",
+    model_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("MODEL_API_KEY", "DEEPSEEK_API_KEY")
     )
-    host: str = Field(default="127.0.0.1", validation_alias="HOST")
-    port: int = Field(default=8000, validation_alias="PORT")
-
+    data_dir: Path = STATIC1_ROOT / "data"
+    knowledge_root: Path = KNOWLEDGE_ROOT
+    text_root: Path = KNOWLEDGE_ROOT / "project_progress/texts/v4"
+    web_provider: str = "crawl4ai"
+    web_sessions_file: Path | None = None
+    firecrawl_api_key: SecretStr | None = None
+    firecrawl_base_url: str = "https://api.firecrawl.dev"
+    pdf_ocr: bool = True
+    pdf_ocr_language: str = "eng"
+    max_research_steps: int = Field(default=24, ge=4, le=100)
+    max_rounds: int = Field(default=2, ge=1, le=3)
+    run_timeout: float = Field(default=180, ge=10, le=600)
+    langsmith_tracing: bool = False
+    langsmith_api_key: SecretStr | None = None
+    langsmith_project: str = "agentic-rag-static"
     model_config = SettingsConfigDict(
-        env_file=(str(STATIC1_ROOT.parent / ".env"), str(STATIC1_ROOT / ".env")),
+        env_file=(STATIC1_ROOT.parent / ".env", STATIC1_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
-        case_sensitive=False,
+        populate_by_name=True,
     )
 
 
-@lru_cache(maxsize=1)
+@lru_cache
 def get_settings() -> Settings:
-    """Return the process-wide settings object."""
-
     return Settings()
-
-
-__all__ = ["STATIC1_ROOT", "Settings", "get_settings"]

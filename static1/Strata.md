@@ -1,32 +1,21 @@
-> 面向小型数据的`Q&A bot`
-NOW: 现阶段就面向`langchain文档`
-NEXT: 未来拓展到本地私有数据  TODO
-FINAL: 面向指定的、易获取的文档（易获取是指 web端能直接访问到、无需通过复杂的人机验证/登录等，或者本地数据直接读取）  TODO
-FINAL Z：尝试面向有点挑战的数据？ 比如推特上的高质量用户对话...  TODO
-> 哈哈这个产品从一开始好像就被市面上的优质产品给代替了呢，不过用来学习、个人持续优化在好不过了..而且（做大做强之后哈哈）之后还得考虑到知识库上下文超出 `model context 1m` 的情况。
+# static1 方向与进度
 
----
+当前目标：面向小型本地文本、PDF 与指定网页快照的单用户 Agentic RAG。
+以两份笔记和 chat-langchain 源码为参考，保留一套源码与运行入口。
 
-## 个人版 Chat LangChain 实施规划（2026-09-11）
+已实现：
+- React + TypeScript + Tailwind，FastAPI。
+- 指定 v4 文本、knowledge 中 PDF，统一导入和检索。
+- LiteParse 本地 PDF 解析。
+- Crawl4AI/Firecrawl 网页预览确认与会话配置入口。
+- Deep Agent search/read，LangGraph 有限补查与证据来源核验。
+- 模型 OpenAI 兼容接口与可选 LangSmith tracing。
 
-### NOW：先做成打开就能用的单用户版本
+后续：
+- 使用已有 retrieval_v4/reliability_v4 测试集评估检索和回答。
+- 基于失败案例决定是否加入向量、重排或语义核验。
+- 持久会话与长期运行管理。
+- 有实际需求后再接多 Agent、多模型和 Managed Deep Agents 部署。
 
-- [x] 去掉注册、登录、Supabase 和多用户身份管理，保留个人本地使用场景。
-- [x] 使用 DeepSeek `deepseek-chat`，通过 OpenAI 兼容接口接入 LangChain。
-- [x] 使用 LangChain 官方文档作为第一批知识源，支持抓取、本地 JSON 缓存和更新。
-- [x] 提供 FastAPI 后端、SSE 流式回答和一个无需单独构建的浏览器前端。
-- [x] 回答附带文档链接，浏览器本地保存当前会话。
+历史执行记录见 dev_logs.md；启动和当前范围见 README.md。
 
-### NEXT：把个人工具变成可持续迭代的知识库
-
-- [ ] 接入本地 Markdown、PDF 和网页导入，沿用文档缓存接口。
-- [ ] 将当前关键词检索替换为可选的 BM25 或向量检索，避免一开始引入复杂外部服务。
-- [ ] 增加文档更新时间、删除和重新索引操作。
-- [ ] 增加对话导出和提示词配置，但继续保持单用户免登录。
-
-### 验收条件与停止条件
-
-- 验收：复制 `.env.example` 填入 `DEEPSEEK_API_KEY` 后，单条命令启动并能打开网页。
-- 验收：第一次提问能抓取并缓存 LangChain 文档，后续请求优先使用缓存。
-- 验收：回答流式显示，并至少能展示一个官方文档来源卡片。
-- 停止：个人版核心链路稳定后再扩展私有数据，不在本阶段引入复杂认证和部署系统。
