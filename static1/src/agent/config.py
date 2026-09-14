@@ -22,6 +22,9 @@ class Settings(BaseSettings):
         default=None, validation_alias=AliasChoices("MODEL_API_KEY", "DEEPSEEK_API_KEY")
     )
     data_dir: Path = STATIC1_ROOT / "data"
+    embedding_path: str = ""
+    embedding_device: str = "cpu"
+    embedding_query_prompt: str = ""
     knowledge_root: Path = KNOWLEDGE_ROOT
     text_root: Path = KNOWLEDGE_ROOT / "project_progress/texts/v4"
     web_provider: str = "crawl4ai"

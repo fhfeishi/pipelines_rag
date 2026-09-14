@@ -48,8 +48,12 @@ def lines_for(text: str) -> list[str]:
 
 
 class Knowledge:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, settings=None):
         self.path = path
+        self.dense = None
+        if settings is not None and settings.embedding_path.strip():
+            from .dense import DenseIndex
+            self.dense = DenseIndex(path.parent / "chroma", settings.embedding_path, settings.embedding_device, settings.embedding_query_prompt)
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS docs (
@@ -95,7 +99,7 @@ class Knowledge:
         query_tokens = tokens(query)
         if not query_tokens:
             return []
-        candidates, corpus = [], []
+        candidates, corpus, texts = [], [], []
         for doc in self.all():
             for page in doc["pages"]:
                 lines = lines_for(page["text"])
@@ -104,6 +108,7 @@ class Knowledge:
                     if not re.search(r"[A-Za-z\u4e00-\u9fff]", snippet):
                         continue
                     corpus.append(tokens(doc["title"] + " " + snippet) or ["_empty_"])
+                    texts.append(doc["title"] + "\n" + snippet)
                     candidates.append(
                         {
                             "doc_id": doc["doc_id"],
@@ -118,9 +123,13 @@ class Knowledge:
             return []
         scores = BM25Plus(corpus).get_scores(query_tokens)
         ranked = sorted(range(len(corpus)), key=lambda i: float(scores[i]), reverse=True)
-        return [candidates[i] for i in ranked if set(query_tokens).intersection(corpus[i])][
-            : max(1, min(limit, 10))
-        ]
+        limit = max(1, min(limit, 10))
+        sparse = [position for position in ranked if set(query_tokens).intersection(corpus[position])]
+        if self.dense is not None:
+            from .dense import fuse_rankings
+            dense = self.dense.search(query, texts, candidates, max(20, limit * 3))
+            sparse = fuse_rankings(sparse[:max(20, limit * 3)], dense, limit)
+        return [candidates[position] for position in sparse[:limit]]
 
     def read(
         self,

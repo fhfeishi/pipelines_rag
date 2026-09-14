@@ -14,6 +14,7 @@ from .agent.config import STATIC1_ROOT, get_settings
 from .agent.graph import build_graph
 from .agent.models import tracing
 from .knowledge import Knowledge
+from .official_docs import import_official
 from .parsers import import_defaults, parse_web
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,10 @@ class WebRequest(BaseModel):
     url: str = Field(min_length=1, max_length=4000)
 
 
+class OfficialRequest(BaseModel):
+    sections: list[Literal["langchain", "langgraph", "deepagents"]] = Field(default=["langchain", "langgraph", "deepagents"], min_length=1, max_length=3)
+
+
 def sse(event: str, data: object) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -41,10 +46,36 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     @asynccontextmanager
     async def lifespan(app):
-        app.state.knowledge = knowledge or Knowledge(settings.data_dir / "knowledge.sqlite3")
+        app.state.knowledge = knowledge or Knowledge(settings.data_dir / "knowledge.sqlite3", settings=settings)
         app.state.import_lock = asyncio.Lock()
         app.state.preview = None
+        app.state.official_job = {"status": "idle", "total": 0, "completed": 0, "imported": 0, "changed": 0, "errors": []}
+        app.state.official_task = None
+        app.state.preparation = "ready" if knowledge is not None else "running"
+
+        async def prepare():
+            if knowledge is not None:
+                return
+            try:
+                if not any(doc["kind"] == "official" for doc in await asyncio.to_thread(app.state.knowledge.all)):
+                    async with app.state.import_lock:
+                        app.state.official_job["status"] = "running"
+                        await import_official(app.state.knowledge, ["langchain", "langgraph", "deepagents"], app.state.official_job)
+                        app.state.official_job["status"] = "partial" if app.state.official_job["errors"] else "done"
+                if app.state.knowledge.dense:
+                    await asyncio.to_thread(app.state.knowledge.search, "LangChain")
+                app.state.preparation = "ready"
+            except Exception:
+                logger.exception("Background preparation failed")
+                app.state.preparation = "error"
+
+        preparation_task = asyncio.create_task(prepare())
         yield
+        preparation_task.cancel()
+        await asyncio.gather(preparation_task, return_exceptions=True)
+        if app.state.official_task and not app.state.official_task.done():
+            app.state.official_task.cancel()
+            await asyncio.gather(app.state.official_task, return_exceptions=True)
 
     app = FastAPI(title="Agentic RAG Static", version="0.2.0", lifespan=lifespan)
 
@@ -53,16 +84,43 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
         docs = await asyncio.to_thread(request.app.state.knowledge.all)
         return {
             "status": "ok",
+            "app_id": "static1",
             "model": settings.model_name,
             "docs_count": len(docs),
             "api_key_configured": bool(settings.model_api_key),
             "web_provider": settings.web_provider,
+            "preparation": request.app.state.preparation,
+            "index_progress": request.app.state.knowledge.dense.progress if request.app.state.knowledge.dense else None,
         }
 
     @app.get("/api/documents")
     async def documents(request: Request):
         docs = await asyncio.to_thread(request.app.state.knowledge.all)
         return [{k: v for k, v in d.items() if k != "pages"} | {"pages": len(d["pages"])} for d in docs]
+
+    @app.get("/api/official-docs")
+    async def official_status():
+        return app.state.official_job
+
+    @app.post("/api/official-docs", status_code=202)
+    async def official_import(payload: OfficialRequest):
+        if app.state.official_task and not app.state.official_task.done():
+            raise HTTPException(409, "官方文档正在更新")
+        progress = {"status": "running", "total": 0, "completed": 0, "imported": 0, "changed": 0, "errors": []}
+        app.state.official_job = progress
+
+        async def run():
+            try:
+                async with app.state.import_lock:
+                    await import_official(app.state.knowledge, payload.sections, progress)
+                progress["status"] = "partial" if progress["errors"] else "done"
+            except Exception as exc:
+                logger.exception("Official documentation import failed")
+                progress["status"] = "error"
+                progress["errors"].append({"error": type(exc).__name__})
+
+        app.state.official_task = asyncio.create_task(run())
+        return progress
 
     @app.get("/api/documents/{doc_id}")
     async def read_document(
@@ -110,6 +168,8 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     @app.post("/api/chat")
     async def chat(payload: ChatRequest, request: Request):
+        if app.state.preparation != "ready":
+            raise HTTPException(503, "知识库正在加载，请等待页面显示就绪后发送" if app.state.preparation == "running" else "知识库加载失败，请检查终端日志并重启服务")
         if payload.messages[-1].role != "user":
             raise HTTPException(422, "最后一条消息必须来自用户")
         if sum(len(m.content) for m in payload.messages) > 40000:

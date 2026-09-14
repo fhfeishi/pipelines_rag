@@ -15,7 +15,7 @@ def main():
     parser.add_argument("query", nargs="?", default="")
     args = parser.parse_args()
     settings = get_settings()
-    store = Knowledge(settings.data_dir / "knowledge.sqlite3")
+    store = Knowledge(settings.data_dir / "knowledge.sqlite3", settings=settings)
     if args.action == "ingest":
         result = import_defaults(store, settings)
     elif args.action == "search":

@@ -1,11 +1,53 @@
 # 静知 · Agentic RAG Static
 
+### 启动与加载状态
+
+启动前检查端口：已运行的static1会提示复用地址并退出，不重复安装或启动；其他程序占用会明确报错，不终止其他程序。依赖按虚拟环境、项目路径、Python版本、pyproject.toml及extras记录安装标记，未变化时跳过uv安装；需要修复/升级依赖时使用`UPDATE_DEPS=1 bash launch.sh`。第一次生成标记仍会安装一次。
+
+前端加载期间展示状态卡片与向量片段进度，可以先输入问题；就绪且配置密钥后发送按钮自动启用。失败与断连分别提示，不清空输入。索引没有可用总数时不显示虚构百分比。浏览器无法在端口被其他程序占用时展示本应用错误页，因为请求尚未到达本应用；此类错误在启动终端说明。
+
+## 使用官方文档助手
+
+1. 配置模型密钥，运行 `bash launch.sh` 或 `zsh launch.sh`。
+2. 服务先提供网页，再后台准备Python官方文档和可选向量索引。侧栏显示准备状态，ready后可问答；已有本地文档复用。这样CPU向量化不再阻止网页打开。
+3. 浏览器打开 http://localhost:8000，直接在页面输入框提问，例如“LangGraph 的短期记忆和长期记忆有什么区别？”或“Deep Agents 的 subagents 如何配置？”。不需要在命令行输入问答。侧栏的“导入 / 更新官方文档”用于之后手动刷新语料。
+4. 在“已读证据”核对本地版本快照，用“官方原文”查看在线文档；点击“导出对话与证据版本”保存JSON用于对照。
+
+端口被其他程序占用时，在终端运行 `PORT=18765 bash launch.sh`（zsh同样支持），访问 http://127.0.0.1:18765。启动采用asyncio事件循环。
+
+官方更新失败会保留该来源已有正文，不会删除其他本地文档。当前对已有混合知识库统一检索，没有独立的官方文档过滤开关。导入不调用聊天模型；开启embedding后首次搜索会同步向量，较大语料可增加首次响应时间。
+
+这一版本实现公开文档交流链路，不包含上游Pylon私有知识库、托管线程、登录系统或完整LangSmith反馈服务。官方文档仅覆盖上述Python三个分区，尚不覆盖全部JavaScript、LangSmith和集成参考页面。
+
+实际问答、答案质量和chat-langchain网页端对照由你进行；本轮只执行离线自动化检查与前端构建。重启会终止正在运行的导入任务，重启后可再次更新；已入库页面保留。
+
+设计与接口：[API_PIPELINE.md](API_PIPELINE.md)。`bash launch.sh` 与 `zsh launch.sh` 均可；zsh入口自动转交Bash执行，系统需已安装Bash。
+
 单用户本地知识库问答。React + TypeScript + Tailwind 前端，FastAPI 后端，Deep Agents 研究节点，LangGraph 有限循环，LangSmith 可选追踪。
 
 ## 启动（WSL / Python 3.12+）
+推荐在 static1 目录执行 `bash launch.sh`。优先复用终端已激活的 `VIRTUAL_ENV`，其次使用 `STATIC1_VENV` 指定的已有环境，再依次检查 static1/.venv、仓库 .venv。均不存在时执行 `uv venv --seed --python=3.12 .venv`。需要系统已有 uv 和 Node/npm；uv可按需获取Python。指定或激活的环境无效、Python低于3.12时明确报错，不另建环境掩盖问题。
+依赖统一通过 `uv pip install --python <选中的解释器>` 安装；运行服务也使用同一个解释器，无需在static1重复创建环境。
+启动时安装项目依赖，前端尚未构建时自动安装并构建；前端修改后使用 `REBUILD_FRONTEND=1 bash launch.sh`。脚本不覆盖已有 .env，也不自动导入文档；启动后可在页面导入。
+
+## 可选本地 embedding
+
+在 static1/.env 中设置，变量名大小写均可：
+```dotenv
+EMBEDDING_PATH=E:/local_models/embedding/iic--nlp_gte_sentence-embedding_chinese-base
+EMBEDDING_DEVICE=cpu
+EMBEDDING_QUERY_PROMPT=
+```
+路径指向具体模型目录，必须含 config.json。WSL 自动把 E:/ 转为 /mnt/e/；也可直接填写 Linux 路径。可以切换至 Qwen--Qwen3-Embedding-0.6B 或你的 GTE large 目录，模型需兼容 Sentence Transformers。Qwen 的检索指令可通过 EMBEDDING_QUERY_PROMPT 显式设置，例如 `Instruct: Retrieve relevant passages for the query. Query: `。本轮真实验证了本地 GTE base，Qwen/large 未运行。
+
+EMBEDDING_PATH 留空或不设置时只使用 BM25，不导入或加载 embedding 依赖。指定路径时 launch.sh 自动安装 embedding 可选依赖；在已激活环境手动安装使用 `uv pip install -e '.[embedding]'`。
+
+启用后使用 langchain-huggingface 加载本地模型（local_files_only），langchain-chroma 持久化到 data/chroma；第一次搜索同步向量，后续仅补新增/变化片段并清理旧版本。dense 与 BM25 使用相同的页/行窗口，RRF 融合排序，原有 Deep Agents search/read 和版本核验接口保持一致。模型路径、文件版本或查询提示变更后使用独立集合，首次重新编码；旧模型集合保留在磁盘。指定模型后加载失败会报错，不静默切回 BM25。
+
+## 手动启动
 ```bash
 cd /home/baheas/wslcodespace/pipelines_rag/static1
-../.venv/bin/python -m pip install -e ".[web,dev]"
+uv pip install --python ../.venv/bin/python -e ".[web,dev]"
 ../.venv/bin/python -m playwright install chromium
 # 如需修改配置，复制 .env.example 为 .env 后编辑；已有根目录 .env 也会读取。
 ../.venv/bin/python -m src.cli ingest
@@ -112,7 +154,13 @@ CLI 也支持 search、preview、ask；例如：
 ../.venv/bin/python -m src.cli ask "南溪地基基础施工何时完成？"
 ```
 
-## 参考
+## 可重复检索评估
+
+在 static1 目录运行 `../.venv/bin/python -m src.evaluate --output reports/retrieval_v4.json`。
+评估使用当前已导入的知识库和 retrieval_v4 数据集，分别报告来源召回、正文预期词项覆盖和首个正确来源排名。不会调用模型。
+报告中的 evidence_recall 要求预期词项出现在正确来源的实际阅读正文中，不以其他来源的同名词项充数。该指标不是答案准确率，reliability_v4 中歧义和缺失问题仍需独立的真实模型回答评估。
+
+## 参考资料
 - 两份笔记：../agentic-rag-static.md、../agentic-rag-static-2.md。
 - 上游源码：../third_party/chat-langchain。
 - [LiteParse Python](https://github.com/run-llama/liteparse/tree/main/packages/python)

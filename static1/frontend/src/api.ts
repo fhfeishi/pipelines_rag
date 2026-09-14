@@ -1,4 +1,4 @@
-export type Source = { title: string; url: string; snippet: string; page?: number; doc_id?: string; version?: string };
+export type Source = { title: string; url: string; snippet: string; page?: number; doc_id?: string; version?: string; origin?: string; kind?: string };
 export type Message = { role: "user" | "assistant"; content: string };
 export type Event =
   | { event: "status"; data: { message: string } }
@@ -12,7 +12,10 @@ export async function streamChat(messages: Message[], signal: AbortSignal, recei
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages }), signal,
   });
-  if (!response.ok) throw new Error("请求失败（" + response.status + "）");
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(typeof payload?.detail === "string" ? payload.detail : "请求失败（" + response.status + "）");
+  }
   if (!response.body) throw new Error("浏览器未收到响应流");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

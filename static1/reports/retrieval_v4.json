@@ -1,0 +1,130 @@
+{
+  "scope": "retrieval plus version-checked read; not answer accuracy",
+  "cases": 8,
+  "limit": 6,
+  "source_recall": 1.0,
+  "evidence_recall": 1.0,
+  "mrr": 1.0,
+  "results": [
+    {
+      "id": "node-foundation-finish",
+      "query": "110千伏输变电工程节点计划中，地基与基础工程计划什么时候完成？",
+      "source_rank": 1,
+      "missing_terms": [],
+      "evidence_hit": true,
+      "retrieved_titles": [
+        "110千伏节点计划-重点关注",
+        "110千伏节点计划-重点关注",
+        "110千伏节点计划-重点关注",
+        "三虎输变电工程三级进度计划土建部分",
+        "110kV黄金输变电工程三级进度计划",
+        "南溪三级进度"
+      ]
+    },
+    {
+      "id": "gold-structure-cap",
+      "query": "珠海黄金输变电工程的主体结构封顶计划什么时候完成？",
+      "source_rank": 1,
+      "missing_terms": [],
+      "evidence_hit": true,
+      "retrieved_titles": [
+        "110kV黄金输变电工程三级进度计划",
+        "110kV黄金输变电工程三级进度计划",
+        "110千伏节点计划-重点关注",
+        "珠海110千伏江湾输变电工程施工进度计划（202",
+        "珠海110千伏江湾输变电工程施工进度计划（202",
+        "110kV黄金输变电工程三级进度计划"
+      ]
+    },
+    {
+      "id": "nanxi-foundation",
+      "query": "南溪（旅游）输变电工程的地基基础施工计划起止时间是什么？",
+      "source_rank": 1,
+      "missing_terms": [],
+      "evidence_hit": true,
+      "retrieved_titles": [
+        "南溪三级进度",
+        "三虎输变电工程三级进度计划土建部分",
+        "三虎输变电工程三级进度计划土建部分",
+        "110千伏节点计划-重点关注",
+        "110kV黄金输变电工程三级进度计划",
+        "珠海110千伏江湾输变电工程施工进度计划（202"
+      ]
+    },
+    {
+      "id": "sanhu-electric-cable",
+      "query": "三虎输变电工程电气部分的全站电缆敷设安装计划多久？",
+      "source_rank": 1,
+      "missing_terms": [],
+      "evidence_hit": true,
+      "retrieved_titles": [
+        "三虎输变电工程三级进度计划电气部分",
+        "三虎输变电工程三级进度计划电气部分",
+        "珠海110千伏江湾输变电工程施工进度计划（202",
+        "110kV黄金输变电工程三级进度计划",
+        "三虎输变电工程三级进度计划电气部分",
+        "珠海110千伏江湾输变电工程施工进度计划（202"
+      ]
+    },
+    {
+      "id": "sanhu-civil-preparation",
+      "query": "三虎输变电工程土建部分的施工准备在什么时间？",
+      "source_rank": 1,
+      "missing_terms": [],
+      "evidence_hit": true,
+      "retrieved_titles": [
+        "三虎输变电工程三级进度计划土建部分",
+        "三虎输变电工程三级进度计划土建部分",
+        "三虎输变电工程三级进度计划电气部分",
+        "三级进度计划-土建",
+        "三虎输变电工程三级进度计划土建部分",
+        "110kV黄金输变电工程三级进度计划"
+      ]
+    },
+    {
+      "id": "heyi-site-preparation",
+      "query": "禾益输变电工程变电站土建的三通一平什么时候完成？",
+      "source_rank": 1,
+      "missing_terms": [],
+      "evidence_hit": true,
+      "retrieved_titles": [
+        "三级进度计划-土建",
+        "110kV黄金输变电工程三级进度计划",
+        "110kV黄金输变电工程三级进度计划",
+        "珠海110千伏江湾输变电工程施工进度计划（202",
+        "珠海110千伏江湾输变电工程施工进度计划（202",
+        "珠海110千伏江湾输变电工程施工进度计划（202"
+      ]
+    },
+    {
+      "id": "jiangwan-contract",
+      "query": "江湾输变电工程施工合同签定计划什么时候完成？",
+      "source_rank": 1,
+      "missing_terms": [],
+      "evidence_hit": true,
+      "retrieved_titles": [
+        "珠海110千伏江湾输变电工程施工进度计划（202",
+        "110kV黄金输变电工程三级进度计划",
+        "珠海110kV江湾输变电工程总体进度计划横道图",
+        "珠海110千伏江湾输变电工程施工进度计划（202",
+        "珠海110kV江湾输变电工程总体进度计划横道图",
+        "珠海110kV江湾输变电工程总体进度计划横道图"
+      ]
+    },
+    {
+      "id": "jiangwan-overall",
+      "query": "珠海江湾110kV输变电工程总体计划的开始和完成日期是什么？",
+      "source_rank": 1,
+      "missing_terms": [],
+      "evidence_hit": true,
+      "retrieved_titles": [
+        "珠海110kV江湾输变电工程总体进度计划横道图",
+        "珠海110kV江湾输变电工程总体进度计划横道图",
+        "珠海110kV江湾输变电工程总体进度计划横道图",
+        "珠海110kV江湾输变电工程总体进度计划横道图",
+        "珠海110kV江湾输变电工程总体进度计划横道图",
+        "珠海110千伏江湾输变电工程施工进度计划（202"
+      ]
+    }
+  ]
+}
