@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from src.agent.config import Settings
@@ -78,3 +79,63 @@ def test_sse_success_and_failure(tmp_path):
         assert "event: error" in response.text
         assert "event: done" not in response.text
         assert "private key" not in response.text
+
+
+def test_preparation_guards_and_lightweight_health(tmp_path, monkeypatch):
+    app, store = setup(tmp_path)
+    with TestClient(app) as client:
+        def unexpected_read():
+            raise AssertionError("Health must not deserialize the corpus")
+
+        monkeypatch.setattr(store, "all", unexpected_read)
+        app.state.preparation = "running"
+        health = client.get("/api/health").json()
+        assert health["preparation"] == "running"
+        assert health["docs_count"] == 0
+        payload = {"messages": [{"role": "user", "content": "question"}]}
+        response = client.post("/api/chat", json=payload)
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "3"
+        assert "加载" in response.json()["detail"]
+        assert client.post("/api/official-docs", json={}).status_code == 409
+        assert client.post("/api/ingest/local").status_code == 409
+        assert client.post("/api/web/confirm/unknown").status_code == 409
+        app.state.preparation = "error"
+        assert "失败" in client.post("/api/chat", json=payload).json()["detail"]
+
+
+@pytest.mark.parametrize("outcome", ["success", "empty", "failure"])
+def test_background_preparation(tmp_path, monkeypatch, outcome):
+    import asyncio
+    import threading
+    import time
+
+    from src import main
+
+    store = Knowledge(tmp_path / "db")
+    release = threading.Event()
+
+    async def importer(knowledge, sections, progress):
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        if outcome == "failure":
+            raise RuntimeError("private details")
+        if outcome == "success":
+            knowledge.put(Document(title="Official", origin="test", kind="official", parser="test", pages=[Page(number=1, text="docs")]))
+
+    monkeypatch.setattr(main, "Knowledge", lambda *args, **kwargs: store)
+    monkeypatch.setattr(main, "import_official", importer)
+    app = create_app(settings=Settings(_env_file=None, data_dir=tmp_path))
+    with TestClient(app) as client:
+        try:
+            assert client.get("/api/health").json()["preparation"] == "running"
+        finally:
+            release.set()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            health = client.get("/api/health").json()
+            if health["preparation"] != "running":
+                break
+            time.sleep(0.01)
+        assert health["preparation"] == ("ready" if outcome == "success" else "error")
+        assert "private details" not in str(health)

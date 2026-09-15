@@ -64,9 +64,14 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
                         app.state.official_job["status"] = "partial" if app.state.official_job["errors"] else "done"
                 if app.state.knowledge.dense:
                     await asyncio.to_thread(app.state.knowledge.search, "LangChain")
+                if not await asyncio.to_thread(app.state.knowledge.count):
+                    raise RuntimeError("No documents available after preparation")
                 app.state.preparation = "ready"
-            except Exception:
+            except Exception as exc:
                 logger.exception("Background preparation failed")
+                if app.state.official_job["status"] == "running":
+                    app.state.official_job["status"] = "error"
+                    app.state.official_job["errors"].append({"error": type(exc).__name__})
                 app.state.preparation = "error"
 
         preparation_task = asyncio.create_task(prepare())
@@ -81,17 +86,21 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     @app.get("/api/health")
     async def health(request: Request):
-        docs = await asyncio.to_thread(request.app.state.knowledge.all)
+        docs_count = await asyncio.to_thread(request.app.state.knowledge.count)
         return {
             "status": "ok",
             "app_id": "static1",
             "model": settings.model_name,
-            "docs_count": len(docs),
+            "docs_count": docs_count,
             "api_key_configured": bool(settings.model_api_key),
             "web_provider": settings.web_provider,
             "preparation": request.app.state.preparation,
             "index_progress": request.app.state.knowledge.dense.progress if request.app.state.knowledge.dense else None,
         }
+
+    def require_ready():
+        if app.state.preparation != "ready":
+            raise HTTPException(503, "知识库正在加载，请等待页面显示就绪后发送" if app.state.preparation == "running" else "知识库加载失败，请检查终端日志并重启服务", headers={"Retry-After": "3"})
 
     @app.get("/api/documents")
     async def documents(request: Request):
@@ -104,6 +113,8 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     @app.post("/api/official-docs", status_code=202)
     async def official_import(payload: OfficialRequest):
+        if app.state.preparation == "running":
+            raise HTTPException(409, "知识库正在初始化，请等待初始化结束后更新")
         if app.state.official_task and not app.state.official_task.done():
             raise HTTPException(409, "官方文档正在更新")
         progress = {"status": "running", "total": 0, "completed": 0, "imported": 0, "changed": 0, "errors": []}
@@ -137,6 +148,8 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     @app.post("/api/ingest/local")
     async def ingest(request: Request):
+        if app.state.preparation == "running":
+            raise HTTPException(409, "知识库正在初始化，请稍后导入")
         async with app.state.import_lock:
             return await asyncio.to_thread(import_defaults, app.state.knowledge, settings)
 
@@ -158,6 +171,8 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     @app.post("/api/web/confirm/{preview_id}")
     async def confirm(preview_id: str):
+        if app.state.preparation == "running":
+            raise HTTPException(409, "知识库正在初始化，请稍后确认")
         async with app.state.import_lock:
             current = app.state.preview
             if current is None or current[0] != preview_id:
@@ -168,8 +183,7 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     @app.post("/api/chat")
     async def chat(payload: ChatRequest, request: Request):
-        if app.state.preparation != "ready":
-            raise HTTPException(503, "知识库正在加载，请等待页面显示就绪后发送" if app.state.preparation == "running" else "知识库加载失败，请检查终端日志并重启服务")
+        require_ready()
         if payload.messages[-1].role != "user":
             raise HTTPException(422, "最后一条消息必须来自用户")
         if sum(len(m.content) for m in payload.messages) > 40000:

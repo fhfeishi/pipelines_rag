@@ -4,6 +4,7 @@
 以两份笔记和 chat-langchain 源码为参考，保留一套源码与运行入口。
 
 已实现：
+- 启动与检索就绪分离、前端加载提示、初始化期间写入保护；HLD.md / LLD.md 维护系统边界、模块契约与状态流程。
 - Python LangChain/LangGraph/Deep Agents官方Markdown目录发现与批量更新，页面进度/错误展示、官方原文链接、对话与证据版本导出。
 - 研究中复用搜索/阅读结果，中文技术问题引导英文概念检索，先搜索再读取的工具约束。
 - launch.sh 自动复用或创建虚拟环境；可选本地 HuggingFace embedding、Chroma持久化与dense+BM25 RRF混合检索（空路径仅BM25）。

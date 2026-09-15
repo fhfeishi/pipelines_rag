@@ -81,6 +81,10 @@ class Knowledge:
             "changed": not old or old[0] != version,
         }
 
+    def count(self) -> int:
+        with self.connect() as db:
+            return db.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
+
     def all(self) -> list[dict]:
         with self.connect() as db:
             return [

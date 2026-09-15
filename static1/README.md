@@ -1,5 +1,7 @@
 # 静知 · Agentic RAG Static
 
+设计导航：[HLD 系统架构与工作流程](HLD.md) · [LLD 模块与状态契约](LLD.md) · [完整 API 与上游映射](API_PIPELINE.md)。
+
 ### 启动与加载状态
 
 启动前检查端口：已运行的static1会提示复用地址并退出，不重复安装或启动；其他程序占用会明确报错，不终止其他程序。依赖按虚拟环境、项目路径、Python版本、pyproject.toml及extras记录安装标记，未变化时跳过uv安装；需要修复/升级依赖时使用`UPDATE_DEPS=1 bash launch.sh`。第一次生成标记仍会安装一次。

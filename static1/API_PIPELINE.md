@@ -1,6 +1,6 @@
 # static1 架构与 API pipeline
 
-更新：2026-09-14。本文区分当前代码契约与后续设计；现有接口以 src/main.py 和运行时 /openapi.json 为准。
+更新：2026-09-15。本文区分当前代码契约与后续设计；现有接口以 src/main.py 和运行时 /openapi.json 为准。系统边界与工作流程见 [HLD.md](HLD.md)，启动状态、错误和模块契约见 [LLD.md](LLD.md)。
 
 阅读顺序：先读第1、2节了解系统目标与功能，再用第3、4节查接口；讨论重构看第5节，安排本地与网页端实验看第6节。日常开发优先查阅本文，无需重复通读chat-langchain。
 
@@ -49,7 +49,7 @@ SQLite是可引用原文的事实来源；Chroma是可重建的检索索引。�
 | connectors/langsmith.py反馈与trace访问 | 可选LangSmith tracing | 本地反馈、执行记录与评估关联 |
 | src/tools/link_check_tools.py | 本地来源版本核验 | 外部官方链接可访问性检查，两者不等价 |
 
-Pylon支持文章可能需要凭据，不能当作已公开可获取语料。LangChain、LangGraph、Deep Agents公开文档可作为本地对照语料，但目前仍需通过网页预览确认逐页导入。
+Pylon支持文章可能需要凭据，不能当作已公开可获取语料。LangChain、LangGraph、Deep Agents公开Python文档已支持官方目录批量导入；通用网页仍需预览确认。
 
 ## 3. 下层 HTTP API：当前契约
 
