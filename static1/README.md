@@ -1,6 +1,8 @@
 # 静知 · Agentic RAG Static
 
-设计导航：[HLD 系统架构与工作流程](HLD.md) · [LLD 模块与状态契约](LLD.md) · [完整 API 与上游映射](API_PIPELINE.md)。
+开发文档统一入口：[dev_docs](../dev_docs/README.md)。本README保留安装、启动与使用说明；规划、设计和执行记录集中维护。
+
+设计导航：[HLD 系统架构与工作流程](../dev_docs/static1_design/HLD.md) · [LLD 模块与状态契约](../dev_docs/static1_design/LLD.md) · [完整 API 与上游映射](../dev_docs/static1_design/API_PIPELINE.md)。
 
 ### 启动与加载状态
 
@@ -23,7 +25,7 @@
 
 实际问答、答案质量和chat-langchain网页端对照由你进行；本轮只执行离线自动化检查与前端构建。重启会终止正在运行的导入任务，重启后可再次更新；已入库页面保留。
 
-设计与接口：[API_PIPELINE.md](API_PIPELINE.md)。`bash launch.sh` 与 `zsh launch.sh` 均可；zsh入口自动转交Bash执行，系统需已安装Bash。
+设计与接口：[API_PIPELINE.md](../dev_docs/static1_design/API_PIPELINE.md)。`bash launch.sh` 与 `zsh launch.sh` 均可；zsh入口自动转交Bash执行，系统需已安装Bash。
 
 单用户本地知识库问答。React + TypeScript + Tailwind 前端，FastAPI 后端，Deep Agents 研究节点，LangGraph 有限循环，LangSmith 可选追踪。
 
@@ -163,7 +165,7 @@ CLI 也支持 search、preview、ask；例如：
 报告中的 evidence_recall 要求预期词项出现在正确来源的实际阅读正文中，不以其他来源的同名词项充数。该指标不是答案准确率，reliability_v4 中歧义和缺失问题仍需独立的真实模型回答评估。
 
 ## 参考资料
-- 两份笔记：../agentic-rag-static.md、../agentic-rag-static-2.md。
+- 合并笔记与下一阶段计划：[Agentic RAG](../dev_docs/static1_plan/roadmap.md)；[原始笔记归档](../dev_docs/deprecated/agentic-rag-static-history.md)。
 - 上游源码：../third_party/chat-langchain。
 - [LiteParse Python](https://github.com/run-llama/liteparse/tree/main/packages/python)
 - [Crawl4AI 认证](https://docs.crawl4ai.com/advanced/identity-based-crawling/)
