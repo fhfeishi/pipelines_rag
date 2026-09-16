@@ -28,16 +28,18 @@ OpenAI 兼容本地/远程模型共享 models.py；LangSmith 开关也在此控�
 MCP、Managed Deep Agents、多 Agent 是可选后续步骤，当前不引入空适配或未验证部署入口。
 
 ## 当前能力
+
+- 答案Markdown复制、最新一轮重新生成与旧版本保留；浏览器首正文等待/完成总耗时、停止失败耗时及导出。状态契约见LLD第7节；尚无模型usage或内部推理耗时。
 - 文档导入与更新；LiteParse 本地解析。
 - Crawl4AI 或 Firecrawl 网页预览确认入库、按域名加载用户会话。
-- Deep Agents 两个业务工具：search_docs 和 read_doc。
+- Deep Agents 默认四个业务工具：search_docs、read_doc、check_corpus_page、finish_research；EVIDENCE_ROUTING=false保留原两工具路径。
 - LangGraph 研究 → 验证 → 补查/回答。
 - SSE 过程、来源与文本；断开请求取消当前请求任务。
 - React 统一入口；FastAPI 可直接托管生产构建。
 - LangSmith 可配置 tracing。
 
 ## 当前验证的边界
-验证节点核对的是文档存在、版本匹配和正文非空。它不会用模型自报 confidence 代替事实核验。
+验证节点核对文档存在、版本匹配、正文非空和报告证据ID，并按结构化覆盖报告做有限路由。报告的语义支持判断仍来自研究模型，不等于独立事实裁判。缺页硬停止只信任本地目录核验，单次未命中不是缺页证明。
 结构化证据来自实际工具读取，包含 doc_id、version、page、start_line、text；最终答案不能凭搜索摘要建立来源。
 仍有改进空间：检索召回评估、独立语义判定、引用编号准确率、多用户与持久运行取消。
 新增功能要用现有小库评估收益，避免先拆分多个 Agent。

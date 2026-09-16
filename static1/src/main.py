@@ -8,7 +8,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .agent.config import STATIC1_ROOT, get_settings
 from .agent.graph import build_graph
@@ -21,11 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=12000)
 
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     messages: list[ChatMessage] = Field(min_length=1, max_length=20)
 
 
@@ -199,6 +201,9 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
                                 "messages": [m.model_dump() for m in payload.messages],
                                 "rounds": 0,
                                 "evidence": [],
+                                "searches": {},
+                                "report": None,
+                                "blocked": None,
                             },
                             stream_mode="custom",
                             config={"recursion_limit": 12, "tags": ["static1", "agentic-rag"]},

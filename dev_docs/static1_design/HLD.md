@@ -5,7 +5,7 @@
 
 下一阶段的目标架构与实验顺序见 [Agentic RAG 提升计划](../static1_plan/roadmap.md) 第4、8节；其内容为规划，本文仍描述已实现系统，不提前把目标节点画成现状。
 
-维护日期：2026-09-15。本文描述已实现边界；模块、状态和故障契约见 [LLD.md](LLD.md)，上游源码映射和完整接口见 [API_PIPELINE.md](API_PIPELINE.md)。
+维护日期：2026-09-16。本文描述已实现边界；模块、状态和故障契约见 [LLD.md](LLD.md)，上游源码映射和完整接口见 [API_PIPELINE.md](API_PIPELINE.md)。
 
 ## 目标与非目标
 
@@ -33,6 +33,8 @@ SQLite 是可引用原文的事实来源；向量索引可以重建，不能代�
 
 ## 工作流程 work-pipeline
 
+默认启用证据缺口路由；EVIDENCE_ROUTING=false可恢复原非空证据路由。缺页工具只核验已有官方URL的本地收录，不联网抓取。研究模型负责子问题和支持判断，应用验证引用/边界并执行硬停止；不宣称独立语义审核已经实现。
+
 ```mermaid
 flowchart TD
   Launch[launch.sh：复用或创建 uv 环境] --> Port{端口可绑定?}
@@ -44,8 +46,12 @@ flowchart TD
   Prepare -->|成功且有文档| Ready[ready；配置密钥后前端可发送]
   Prepare -->|异常或空库| Error[error；提示检查日志与重启]
   Ready --> Ask[用户提问]
-  Ask --> Research[搜索 → 阅读 → 版本核验 → 有限补查]
-  Research --> Answer[流式回答与引用 → 用户核对官方原文]
+  Ask --> Fresh[生效版本消息 → 新建研究状态]
+  Fresh --> Research[搜索 → 阅读 → 结构化子问题覆盖报告]
+  Research --> Check{版本与报告引用核验 / 停止条件}
+  Check -->|缺口可修复且预算允许| Research
+  Check -->|已核实缺页且不能补页| Stop[简短缺页说明 + 单步补材料动作]
+  Check -->|覆盖完成或预算用尽| Answer[限定范围的流式回答与引用]
 ```
 
 ## 稳定性边界

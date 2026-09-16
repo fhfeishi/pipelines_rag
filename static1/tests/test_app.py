@@ -33,6 +33,28 @@ def test_api_and_validation(tmp_path):
         assert client.post("/api/web/confirm/unknown").status_code == 409
 
 
+def test_chat_rejects_client_research_state_and_starts_fresh(tmp_path):
+    states = []
+
+    class Graph:
+        async def astream(self, state, **kwargs):
+            assert state["evidence"] == [] and state["searches"] == {}
+            assert state["rounds"] == 0 and state["report"] is None and state["blocked"] is None
+            states.append(state)
+            state["evidence"].append({"old": "server-only"})
+            yield {"event": "token", "data": {"text": "answer"}}
+
+    app, _ = setup(tmp_path, lambda *args: Graph())
+    message = {"role": "user", "content": "问题"}
+    with TestClient(app) as client:
+        for field in ("evidence", "searches", "report", "previousAttempts", "sources"):
+            assert client.post("/api/chat", json={"messages": [message], field: []}).status_code == 422
+        assert client.post("/api/chat", json={"messages": [{**message, "sources": []}]}).status_code == 422
+        for _ in range(2):
+            assert "event: done" in client.post("/api/chat", json={"messages": [message]}).text
+    assert states[0] is not states[1]
+
+
 def test_preview_requires_confirmation(tmp_path, monkeypatch):
     from src import main
 

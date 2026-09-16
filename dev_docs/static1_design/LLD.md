@@ -3,7 +3,7 @@
 > 文档归属：static1。2026-09-16 从 `static1/LLD.md` 迁入。本文件是此主题的唯一维护入口。正文中的源码路径以仓库根目录或明确标注的 static1 目录为基准，不以本文目录为基准。
 
 
-下一阶段的结构化证据、缺口路由和共享预算契约见 [Agentic RAG 提升计划](../static1_plan/roadmap.md) 第5、6节；这些是拟议契约，尚未替代本文现有接口。
+结构化报告和基础缺口路由已按本文第8节实现；完整任务契约、共享token预算等仍见 [Agentic RAG 提升计划](../static1_plan/roadmap.md) 第5、6、11节，不将完整规划当作已实现。
 
 维护日期：2026-09-15。系统边界见 [HLD.md](HLD.md)。本文重点维护启动和就绪契约，完整业务 API 见 [API_PIPELINE.md](API_PIPELINE.md)。
 
@@ -67,3 +67,31 @@ stateDiagram-v2
 - tests/test_launcher.py 和 test_launch.py：安装缓存、端口冲突、环境选择。
 - tests/test_dense.py：向量复用与失效片段、无 embedding、融合行为。
 - 真实模型、完整本地模型索引性能和浏览器问答是独立验收，不以假模型单元测试替代。
+
+## 7. 答案交互与浏览器耗时（2026-09-16）
+
+前端 `conversation.ts` 管理Turn/Attempt和纯状态转换，`Answer.tsx` 展示Markdown、复制、来源与耗时，`main.tsx` 调度请求与旧版本。后端API及SSE字段不变。
+
+Attempt记录answer/sources/complete/outcome、startedAt（日期）、firstTokenMs/totalMs/elapsedMs（可空数值）。持续时间使用浏览器单调时钟performance.now。状态running→completed/cancelled/failed，终态不受后续事件修改。首个非空token设置firstTokenMs一次；done设置totalMs和elapsedMs；异常/取消仅设置elapsedMs。运行中计时刷新局限于计时组件，不逐帧重绘答案全文。
+
+Turn另存requestMessages快照和previousAttempts。只有最新一轮可重新生成，重新从此前生效且完整的版本构造role/content，不信任旧请求快照；旧Attempt归档，新Attempt计时重置为未知。下一轮仅携带最新完整版本；旧版本和来源面板仅查看/复制/导出，不自动进入请求。所有状态仍仅在页面内存中。
+
+SSE解析器收到成功done后立即返回并释放读取器；不等待EOF，不处理done后的token。停止按钮阻止表单默认提交，避免取消时按钮切换成发送按钮而意外发送草稿。复制使用Clipboard API，拒绝时明确提示失败。
+
+验证入口：frontend/src/conversation.test.mts、api.test.mts和tests/browser_answer_controls.py；后者用生产构建、受控流和本地静态服务器，不调用模型。Think口径与后续usage规则详见roadmap第11节。
+
+## 8. 研究交接、隔离与硬停止（2026-09-16）
+
+`agent/evidence.py`定义ResearchReport/Assessment及路由。每项包含question、status、evidence_ids、gap、next_action、detail；最多8个子问题。report不是事实来源，只有实际read_doc正文可引用。evidence_id绑定doc_id/page/start_line/version，截断为16位SHA256标识；读同一片段复用，版本变化不复用。
+
+默认增加两个业务工具：finish_research接收结构化报告并return_direct结束内层Agent；check_corpus_page只接受用户消息或已读正文中出现的docs.langchain.com URL，核对本地origin（归一化.md、锚点与查询参数）。搜索未命中、模型自报缺页、模型编造URL均不能触发硬停止。当前没有问答时联网补页能力，不声称实时核验远程页面是否存在或网络是否可用。
+
+空目录，或核验所需URL未收录后设置blocked并抛出受控CorpusBlocked，退出内层Agent；工具锁保护检查与知识库操作，排队搜索/阅读检查blocked后不再执行。外层直接到简短固定回答，不再核验/读取旧证据或调用答案模型；来源列表为空。固定回答给出缺材料/未能补齐unknown及一个导入正文动作。此前已经完成的操作不被伪装成未发生。
+
+正常交接合并旧子问题与新报告，补查不得通过删除旧未解决项获得covered。validate移除失效证据，对非法/空ID的supported/partial降级；未核验corpus_missing改为unknown；输出gap强制answer、条件gap强制clarify。报告未交接或合并超8项则handoff_missing，停止而不默认为充分。
+
+路由依次检查blocked、交接缺失、全覆盖、轮数、无新增证据、阅读上限、可执行补查和查询上限。最多6段阅读，MAX_SEARCHES默认6个不同查询（全run共享），MAX_ROUNDS默认2；第一轮缺口允许一次修复，之后无新增证据停止。EVIDENCE_ROUTING默认true，false使用旧两工具与非空证据路由。
+
+HTTP层ChatRequest/ChatMessage禁止额外字段。每次创建新图状态evidence=[]/searches={}/rounds=0/report=None/blocked=None，无checkpointer恢复旧研究。前端版本选择的真实性由前端构造保证；服务端不声称能辨认纯文本里人为粘贴的旧答案。
+
+测试：test_evidence_routing.py覆盖部分覆盖、重复循环、无效引用、预算、子问题保留、缺页判断和真实Deep Agents图的终止行为；test_app.py覆盖旧状态字段拒绝与新请求状态独立；前端测试污染旧requestMessages后仍正确重建。

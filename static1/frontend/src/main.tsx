@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { streamChat, type Message, type Source } from "./api";
+import { streamChat } from "./api";
+import { Answer } from "./Answer";
+import { newTurn, regenerateTurn, receiveEvent, stopTurn, type Turn } from "./conversation";
 import "./style.css";
 import { KnowledgePanel } from "./KnowledgePanel";
 import { OfficialDocs } from "./OfficialDocs";
 
-type Turn = { question: string; answer: string; sources: Source[]; complete: boolean };
 function App() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -18,6 +17,7 @@ function App() {
   const [ready, setReady] = useState(false);
   const [progress, setProgress] = useState<{ stage: string; completed: number; total: number } | null>(null);
   const controller = useRef<AbortController | null>(null);
+  const startedTick = useRef(0);
   const bottom = useRef<HTMLDivElement>(null);
   function exportChat() {
     const blob = new Blob([JSON.stringify({ exported_at: new Date().toISOString(), service: health, turns }, null, 2)], { type: "application/json" });
@@ -39,27 +39,28 @@ function App() {
     return () => { clearInterval(timer); controller.current?.abort(); };
   }, []);
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [turns, status]);
-  async function send() {
-    const question = input.trim();
+  async function send(regenerate = false) {
+    const question = regenerate ? turns.at(-1)?.question : input.trim();
     if (!question || controller.current || !ready) return;
-    const previous: Message[] = turns.filter(t => t.complete).slice(-9).flatMap(t => [
-      { role: "user" as const, content: t.question },
-      { role: "assistant" as const, content: t.answer },
-    ]);
+    const turn = regenerate ? regenerateTurn(turns[turns.length - 1], turns.slice(0, -1)) : newTurn(question, turns);
     const request = new AbortController();
     controller.current = request;
-    setInput(""); setBusy(true); setError(""); setStatus("正在连接知识库");
-    setTurns(old => [...old, { question, answer: "", sources: [], complete: false }]);
+    const start = performance.now();
+    startedTick.current = start;
+    if (!regenerate) setInput("");
+    setBusy(true); setError(""); setStatus("正在连接知识库");
+    setTurns(old => regenerate ? [...old.slice(0, -1), turn] : [...old, turn]);
     const update = (apply: (turn: Turn) => Turn) => setTurns(old => old.map((t, i) => i === old.length - 1 ? apply(t) : t));
     try {
-      await streamChat([...previous, { role: "user", content: question }], request.signal, event => {
+      await streamChat(turn.requestMessages, request.signal, event => {
         if (event.event === "status") setStatus(event.data.message);
-        if (event.event === "sources") update(t => ({ ...t, sources: event.data }));
-        if (event.event === "token") update(t => ({ ...t, answer: t.answer + event.data.text }));
-        if (event.event === "done") update(t => ({ ...t, complete: true }));
+        const elapsedMs = performance.now() - start;
+        update(t => receiveEvent(t, event, elapsedMs));
       });
       setStatus("回答完成");
     } catch (e) {
+      const elapsedMs = performance.now() - start;
+      update(t => stopTurn(t, request.signal.aborted, elapsedMs));
       setError(request.signal.aborted ? "已停止，未完成的回答不会作为下一轮上下文。" : e instanceof Error ? e.message : "请求失败");
       setStatus("");
     } finally { controller.current = null; setBusy(false); }
@@ -86,9 +87,12 @@ function App() {
         {turns.map((turn, i) => <article key={i} className="mb-10">
           <div className="mb-6 ml-auto w-fit max-w-full rounded-2xl bg-stone-200/70 px-5 py-3 whitespace-pre-wrap">{turn.question}</div>
           <div className="mb-3 text-xs font-semibold tracking-widest text-teal-700">静知</div>
-          <div className="markdown"><Markdown remarkPlugins={[remarkGfm]}>{turn.answer || (busy && i === turns.length - 1 ? "正在查阅…" : "未生成回答")}</Markdown></div>
-          {!!turn.sources.length && <details className="mt-5 rounded-xl border border-stone-200 bg-white p-4"><summary className="cursor-pointer text-sm">已读证据 · {turn.sources.length}</summary><div className="mt-3 grid gap-3">{turn.sources.map((s, j) => <div key={j}><a className="text-sm text-teal-800 underline" href={s.url.startsWith('/api/documents/') ? s.url : undefined} target="_blank" rel="noreferrer">[{j + 1}] {s.title} · 第{s.page ?? 1}页</a><p className="mt-1 text-xs text-stone-500">{s.snippet}</p></div>)}</div></details>}
-          {turn.sources.filter(source => source.origin?.startsWith("https://docs.langchain.com/")).map((source, index) => <a key={index} className="mr-4 text-xs text-teal-700 underline" href={source.origin} target="_blank" rel="noreferrer">官方原文 · {source.title}</a>)}
+          <Answer attempt={turn} startedTick={i === turns.length - 1 ? startedTick.current : undefined}/>
+          {i === turns.length - 1 && <button type="button" disabled={busy || !ready} className="mt-3 rounded-lg border border-stone-300 px-3 py-1.5 text-xs text-stone-600 hover:bg-stone-100 disabled:opacity-40" onClick={() => void send(true)}>重新生成</button>}
+          {!!turn.previousAttempts.length && <details className="mt-4 rounded-xl border border-stone-200 p-4">
+            <summary className="cursor-pointer text-sm text-stone-500">之前的回答 · {turn.previousAttempts.length} 个版本</summary>
+            {turn.previousAttempts.map((attempt, version) => <div key={version} className="mt-4 border-t border-stone-200 pt-4"><p className="mb-3 text-xs text-stone-500">版本 {version + 1}</p><Answer attempt={attempt}/></div>)}
+          </details>}
         </article>)}
         <div role="status" className="text-sm text-teal-700">{status}</div>
         {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
@@ -97,7 +101,7 @@ function App() {
       <form className="sticky bottom-0 bg-stone-50 pb-6 pt-3" onSubmit={e => { e.preventDefault(); void send(); }}>
         <div className="rounded-2xl border border-stone-300 bg-white p-3 shadow-sm">
           <textarea aria-label="问题" maxLength={12000} rows={3} className="w-full resize-none p-2 outline-none" placeholder="向文档提问…" value={input} onChange={e => setInput(e.target.value)}/>
-          <div className="flex items-center justify-between"><span className="text-xs text-stone-400">当前对话仅保留在此页面</span>{busy ? <button type="button" className="rounded-lg bg-stone-800 px-5 py-2 text-sm text-white" onClick={() => controller.current?.abort()}>停止</button> : <button disabled={!input.trim() || !ready} className="rounded-lg bg-teal-800 px-5 py-2 text-sm text-white disabled:opacity-40">{ready ? "发送 ↑" : "等待知识库就绪"}</button>}</div>
+          <div className="flex items-center justify-between"><span className="text-xs text-stone-400">当前对话仅保留在此页面</span>{busy ? <button type="button" className="rounded-lg bg-stone-800 px-5 py-2 text-sm text-white" onClick={e => { e.preventDefault(); controller.current?.abort(); }}>停止</button> : <button type="submit" disabled={!input.trim() || !ready} className="rounded-lg bg-teal-800 px-5 py-2 text-sm text-white disabled:opacity-40">{ready ? "发送 ↑" : "等待知识库就绪"}</button>}</div>
         </div>
       </form>
     </main>

@@ -74,20 +74,23 @@ Pylon支持文章可能需要凭据，不能当作已公开可获取语料。Lan
 
 网页预览只保留最近一次，重启失效。确认时使用服务端保存的正文，不接受前端替换正文。导入操作有进程内锁；当前按单进程单用户运行，不宣称多worker一致性。
 
-聊天输入：1–20条消息；role仅user/assistant；每条1–12000字符；总计不超过40000字符；最后一条必须为user。
+聊天输入：1–20条消息；role仅user/assistant；每条1–12000字符；总计不超过40000字符；最后一条必须为user。请求和消息对象禁止额外字段（422），不能传入sources/evidence/report/历史版本。每个请求独立新建研究状态。
 
 ```text
 POST /api/chat
   → 验证请求
-  → 创建本次图状态(messages, rounds=0, evidence=[])
-  → research：search_docs → read_doc
-  → validate：文档存在、版本相同、正文非空
-  → 无证据且未到轮数上限：research
-  → 否则answer：无证据明确说明；有证据调用模型组织答案
+  → 创建本次图状态(messages, rounds=0, evidence=[], searches={}, report=None, blocked=None)
+  → research：search_docs → read_doc → finish_research；必要时check_corpus_page
+  → 已核验缺页且local-only：停止内层Agent和外层补查，输出单步补材料动作
+  → validate：文档存在、版本相同、正文非空、报告证据ID有效
+  → 有未覆盖子问题、可执行补查且有预算/进展：research（仅缺口）
+  → 否则answer：有支持部分优先，简短说明缺口和排查动作；明确审计请求可详细
   → sources → token* → done
 ```
 
 status可在各阶段重复出现。sources包含实际已读正文证据及citation编号；token为{text}；done为{ok:true}。异常输出error:{message}，不得当作成功完成；没有done的断流也属未完成。前端AbortSignal关闭请求；服务器取消当前协程，但不保证立即终止已经在线程中执行的解析/embedding计算。
+
+新增内部接口见LLD第8节。SSE字段没有变化；report/blocked/stop_reason仅属服务端运行状态。EVIDENCE_ROUTING=false切回旧非空证据路由。结构化覆盖判断来自研究模型，应用层引用检查不等于独立语义验证。
 
 ## 4. 内部 API 与数据边界
 

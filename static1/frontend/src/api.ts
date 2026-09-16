@@ -41,6 +41,7 @@ export async function streamChat(messages: Message[], signal: AbortSignal, recei
         if (["status", "sources", "token", "done"].includes(event)) {
           receive({ event, data: payload } as Event);
         }
+        if (finished) return;
       }
       if (done) break;
     }

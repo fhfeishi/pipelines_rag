@@ -27,3 +27,20 @@ test('rejects incomplete responses and backend error events', async () => {
     }
   } finally { globalThis.fetch = original; }
 });
+
+test('done is terminal without waiting for socket closure or processing trailing events', async () => {
+  const original = globalThis.fetch;
+  let cancelled = false;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: done\ndata: {"ok":true}\n\nevent: token\ndata: {"text":"late"}\n\n'));
+    },
+    cancel() { cancelled = true; },
+  }));
+  try {
+    const events: unknown[] = [];
+    await streamChat([], new AbortController().signal, event => events.push(event));
+    assert.deepEqual(events, [{ event: 'done', data: { ok: true } }]);
+    assert.equal(cancelled, true);
+  } finally { globalThis.fetch = original; }
+});

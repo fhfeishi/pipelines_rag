@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     pdf_ocr_language: str = "eng"
     max_research_steps: int = Field(default=24, ge=4, le=100)
     max_rounds: int = Field(default=2, ge=1, le=3)
+    evidence_routing: bool = True
+    max_searches: int = Field(default=6, ge=1, le=20)
     run_timeout: float = Field(default=180, ge=10, le=600)
     langsmith_tracing: bool = False
     langsmith_api_key: SecretStr | None = None
