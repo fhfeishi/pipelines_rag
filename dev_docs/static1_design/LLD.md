@@ -16,7 +16,8 @@
 | official_docs.py / parsers.py | 文档来源 → Document | 解析、官方分区发现、逐页写入；网页需预览确认 |
 | knowledge.py | Document / 查询 → 版本快照 / 检索定位 | SQLite 持久化、BM25、读取指定版本 |
 | dense.py | 本地模型、片段 → 向量候选 | 模型懒加载、Chroma 增量同步与进度 |
-| agent/graph.py | 历史消息 → 研究事件、证据、答案 | 限定工具、有限补查、版本核验；不负责 HTTP |
+| agent/routing.py | 消息、配置、文档目录 → 生效策略 | 严格枚举、有限分类、资料解析、失败回退、回答证据约束 |
+| agent/graph.py | 历史消息 → 策略、研究事件、证据、答案 | understand → direct 或 research → validate → answer → finish；不负责 HTTP |
 | frontend/src/api.ts / main.tsx | 健康 JSON / SSE → 页面状态 | 加载提示、发送门禁、流协议、错误展示 |
 
 ## 2. 数据与缓存
@@ -40,14 +41,14 @@ stateDiagram-v2
 
 启动发现已有 official 文档时复用，不自动全量更新；没有时尝试导入三个官方分区。部分抓取失败而已有可用文档可以 ready；空库不能 ready。测试注入 Knowledge 时跳过启动准备，生命周期测试另行覆盖真实准备分支。
 
-`index_progress` 是独立子状态：waiting / loading_model / indexing / ready，附 completed、total。无 embedding 时为 null。它不是服务可用性的替代判断；前端只依据 preparation 和密钥配置启用发送。
+`index_progress` 是独立子状态：waiting / loading_model / indexing / ready，附 completed、total。无 embedding 时为 null。前端依据HTTP连接与密钥配置启用发送，preparation单独决定能否进入研究；密钥存在不证明模型连通。
 
 ## 4. 状态与错误接口
 
 | 接口 / 条件 | 响应与客户端动作 |
 |---|---|
 | GET /api/health | 200；status、app_id、model、docs_count、api_key_configured、web_provider、preparation、index_progress |
-| preparation=running 或 error 时 POST /api/chat | 503，detail 为加载中或失败提示，Retry-After: 3；不创建问答图 |
+| preparation=running 或 error 时 POST /api/chat | 正常建立流；直接交流不访问语料，研究路径返回不可用提示，不启动研究工具 |
 | 初始化期间官方更新、本地导入、网页确认 | 409；避免与初始化重复写入；稍后由用户重试 |
 | 官方更新任务已运行时再次启动 | 409；原任务继续 |
 | 流建立后模型失败 | SSE error，不发送 done；前端不把失败回答作为完整历史 |
@@ -63,14 +64,14 @@ stateDiagram-v2
 
 ## 6. 验证入口
 
-- tests/test_app.py：正常 JSON/SSE、准备期503与写入409、轻量健康检查、后台准备成功/空库/异常。
+- tests/test_app.py：正常 JSON/SSE、准备状态传递与写入409、轻量健康检查、后台准备成功/空库/异常；test_query_routing.py覆盖按能力分流。
 - tests/test_launcher.py 和 test_launch.py：安装缓存、端口冲突、环境选择。
 - tests/test_dense.py：向量复用与失效片段、无 embedding、融合行为。
 - 真实模型、完整本地模型索引性能和浏览器问答是独立验收，不以假模型单元测试替代。
 
 ## 7. 答案交互与浏览器耗时（2026-09-16）
 
-前端 `conversation.ts` 管理Turn/Attempt和纯状态转换，`Answer.tsx` 展示Markdown、复制、来源与耗时，`main.tsx` 调度请求与旧版本。后端API及SSE字段不变。
+前端 `conversation.ts` 管理Turn/Attempt和纯状态转换，`Answer.tsx` 展示Markdown、复制、来源与耗时，`main.tsx` 调度请求与旧版本。A批次增量请求选项与policy事件见API_PIPELINE。
 
 Attempt记录answer/sources/complete/outcome、startedAt（日期）、firstTokenMs/totalMs/elapsedMs（可空数值）。持续时间使用浏览器单调时钟performance.now。状态running→completed/cancelled/failed，终态不受后续事件修改。首个非空token设置firstTokenMs一次；done设置totalMs和elapsedMs；异常/取消仅设置elapsedMs。运行中计时刷新局限于计时组件，不逐帧重绘答案全文。
 
@@ -86,7 +87,7 @@ SSE解析器收到成功done后立即返回并释放读取器；不等待EOF，�
 
 默认增加两个业务工具：finish_research接收结构化报告并return_direct结束内层Agent；check_corpus_page只接受用户消息或已读正文中出现的docs.langchain.com URL，核对本地origin（归一化.md、锚点与查询参数）。搜索未命中、模型自报缺页、模型编造URL均不能触发硬停止。当前没有问答时联网补页能力，不声称实时核验远程页面是否存在或网络是否可用。
 
-空目录，或核验所需URL未收录后设置blocked并抛出受控CorpusBlocked，退出内层Agent；工具锁保护检查与知识库操作，排队搜索/阅读检查blocked后不再执行。外层直接到简短固定回答，不再核验/读取旧证据或调用答案模型；来源列表为空。固定回答给出缺材料/未能补齐unknown及一个导入正文动作。此前已经完成的操作不被伪装成未发生。
+空目录，或核验所需URL未收录后设置blocked，退出内层Agent；工具锁保护检查与知识库操作，排队搜索/阅读检查blocked后不再执行。blocked保存source、reason及受影响question。外层validate继续检查已有证据版本并保留有效项，preserve_blocked_report记录缺失子问题。无有效证据时给固定补材料提示；有有效证据时仅调用答案模型交付支持部分并说明缺项，不重新开放搜索或读取。
 
 正常交接合并旧子问题与新报告，补查不得通过删除旧未解决项获得covered。validate移除失效证据，对非法/空ID的supported/partial降级；未核验corpus_missing改为unknown；输出gap强制answer、条件gap强制clarify。报告未交接或合并超8项则handoff_missing，停止而不默认为充分。
 
@@ -95,3 +96,21 @@ SSE解析器收到成功done后立即返回并释放读取器；不等待EOF，�
 HTTP层ChatRequest/ChatMessage禁止额外字段。每次创建新图状态evidence=[]/searches={}/rounds=0/report=None/blocked=None，无checkpointer恢复旧研究。前端版本选择的真实性由前端构造保证；服务端不声称能辨认纯文本里人为粘贴的旧答案。
 
 测试：test_evidence_routing.py覆盖部分覆盖、重复循环、无效引用、预算、子问题保留、缺页判断和真实Deep Agents图的终止行为；test_app.py覆盖旧状态字段拒绝与新请求状态独立；前端测试污染旧requestMessages后仍正确重建。
+
+## 9. A 批次策略与答案版本契约
+
+`routing.py`中TurnOptions定义auto/knowledge_only、low/middle/high及可空allowed_doc_ids；Intent使用Literal校验route与intent。分类最多等待8秒，受外层run_timeout约束。坏JSON/非法枚举/局部超时回退研究，服务异常明确提示，取消不回退。问候有确定性短路径，knowledge_only且无需资料指代解析时省略分类调用。
+
+资料标题/URL必须实际出现在用户消息中，且能唯一对应目录；不存在与歧义分别说明。允许ID在进入研究前验证；search在排序前排除范围外文档，read再次检查。限定搜索只使用BM25，不把子集同步到共享Chroma。high非社交问题重新查证，不将历史助手文本当作新证据。
+
+Attempt新增请求options与可空服务端policy。每版保存自己的策略；重新生成从policy提取选项（未收到policy时用原options），重新创建研究状态。取消/失败保留已有policy与对应outcome；没有收到policy时保持null，不猜测执行路径。
+
+`QUERY_ROUTING`、`EVIDENCE_LEVEL`是服务默认，前端首次读取health.defaults初始化会话设置；本轮传入值覆盖默认，明确“仅按资料”再收紧。low不能解除指定资料范围。UI设置用于新问题，默认重新生成沿用原版本。
+
+
+### B/C/D 增量接口（2026-09-17）
+- chat 新增 execution_mode: auto/quick/research；SSE新增 telemetry（阶段耗时、搜索/阅读计数）与 usage（实际调用数、已报告/完整用量）。
+- GET documents/{id}?section=true 保留旧坐标，按章节/代码块读取，携带版本与截断标识。
+- POST ingest/text 接收 title/origin/text；同来源更新文档。
+- GET workspace/sessions|notes；PUT workspace/{kind}/{id} 接收 revision/title/data，revision冲突返回409，单记录上限4MB。独立SQLite持久化。
+- 前端 workspace.ts 管理恢复及串行保存，Notes.tsx 管理人工笔记，SourceManager.tsx 管理来源范围和正文补充。笔记仅导航，不注入为事实来源。

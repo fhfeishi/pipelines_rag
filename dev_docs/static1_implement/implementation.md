@@ -51,3 +51,28 @@ MCP、Managed Deep Agents、多 Agent 是可选后续步骤，当前不引入空
 - POST /api/web/preview：url，返回 preview_id、正文；不入库。
 - POST /api/web/confirm/{preview_id}：确认最新预览入库。
 - POST /api/chat：messages → SSE(status/sources/token/done/error)。
+
+## A 批次实现（2026-09-16）
+
+- agent/routing.py：选项与意图契约、有限分类、资料指代解析、证据表达策略。
+- agent/graph.py：新增understand/direct/finish节点，复用research/validate/answer；缺页停止与部分交付分离。
+- agent/evidence.py：preserve_blocked_report保留缺失子问题；knowledge.py在候选构建前执行文档范围过滤。
+- main.py：增量请求字段、按能力就绪、policy事件、错误终态；health返回默认设置。
+- frontend/api.ts / conversation.ts：协议及每版options/policy；Answer.tsx / policy.ts：实际策略展示；main.tsx：输入设置、文档选择、聊天与语料状态分离。
+- 前端生产产物已重建，日常入口http://127.0.0.1:8000直接使用新界面。指定资料暂走BM25，未引入新的向量索引或第二套研究Agent。
+
+验证记录见dev_logs；真实模型仅为小规模场景验收，不表示全面专家质量评测。
+
+
+## 2026-09-17：B/C/D 实施
+
+- 快速路径：单轮短问题优先一次搜索、最多两段阅读及结构化覆盖判断；复杂问题或明确选择深入研究走原研究器。不足时传入已有搜索、证据与覆盖报告，不重置预算。保留总时限、取消、6段阅读和搜索上限。
+- 阅读：`reading.py` 按章节/代码块扩展；保持旧300字符逻辑行坐标，新增 section=true 原文入口。返回 end_line、truncated、code_omitted、采集时间。过大/未闭合代码明确省略，不制造完整代码；重复覆盖范围复用证据。
+- 观测：阶段耗时、搜索与阅读数量；`usage.py` 按模型调用ID收集供应商实际用量，缺失显示未报告或仅已报告部分，不估算成本。
+- 会话：`workspace.sqlite3` 独立存储；保存回答版本、有效配置、引用、用量与耗时。浏览器每秒检查点与结束后保存；恢复中的运行标为已停止，不伪装续跑。写入revision冲突拒绝覆盖，提示导出后刷新。
+- 笔记：从有来源答案创建草稿，编辑后人工确认；每次导航检查来源版本，过期/缺失/未确认笔记不参与导航；只提供原文位置，模型仍须阅读原文。
+- 补充：侧栏支持按标题/来源筛选、多选最多20份资料、粘贴正文；同一来源更新内容版本。
+
+验证：79项后端测试、10项前端测试、Ruff、TypeScript/Vite构建通过。测试涵盖快速覆盖和升级预算复用、章节完整性、会话revision冲突/重开持久性、恢复未完成回答、笔记过期与范围约束。
+
+边界：快速覆盖仍由模型判断，不等同语义正确性证明；限域检索继续用BM25，避免子集同步破坏全局向量索引。服务器取消请求后不保证终止已开始的线程检索；最后尚未保存的流式片段可能在刷新时丢失。当前为单用户本地服务，无跨设备权限系统，未引入完整Wiki或自动联网补页。

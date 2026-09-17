@@ -70,7 +70,7 @@ Pylon支持文章可能需要凭据，不能当作已公开可获取语料。Lan
 | POST /api/ingest/local | 无 | import_defaults的逐文件导入报告 | 单文件失败由导入报告表达 |
 | POST /api/web/preview | {url} | preview_id及Document正文 | 422输入/抓取超时；502抓取失败 |
 | POST /api/web/confirm/{preview_id} | 无 | doc_id、version、title、changed | 409预览过期 |
-| POST /api/chat | {messages:[{role,content}]} | status/sources/token/done/error事件 | 422输入；开始流后用error事件 |
+| POST /api/chat | messages及可选query_routing/evidence_level/allowed_doc_ids | status/policy/sources/token/done/error事件 | 422输入；开始流后用error事件 |
 
 网页预览只保留最近一次，重启失效。确认时使用服务端保存的正文，不接受前端替换正文。导入操作有进程内锁；当前按单进程单用户运行，不宣称多worker一致性。
 
@@ -80,17 +80,18 @@ Pylon支持文章可能需要凭据，不能当作已公开可获取语料。Lan
 POST /api/chat
   → 验证请求
   → 创建本次图状态(messages, rounds=0, evidence=[], searches={}, report=None, blocked=None)
+  → understand：解析生效配置、意图与允许文档范围；直接交流或澄清走direct；研究先检查preparation
   → research：search_docs → read_doc → finish_research；必要时check_corpus_page
-  → 已核验缺页且local-only：停止内层Agent和外层补查，输出单步补材料动作
+  → 已核验缺页且local-only：停止内层Agent和外层补查，保留有效证据供部分回答
   → validate：文档存在、版本相同、正文非空、报告证据ID有效
   → 有未覆盖子问题、可执行补查且有预算/进展：research（仅缺口）
   → 否则answer：有支持部分优先，简短说明缺口和排查动作；明确审计请求可详细
-  → sources → token* → done
+  → sources → token* → 最终policy → done
 ```
 
 status可在各阶段重复出现。sources包含实际已读正文证据及citation编号；token为{text}；done为{ok:true}。异常输出error:{message}，不得当作成功完成；没有done的断流也属未完成。前端AbortSignal关闭请求；服务器取消当前协程，但不保证立即终止已经在线程中执行的解析/embedding计算。
 
-新增内部接口见LLD第8节。SSE字段没有变化；report/blocked/stop_reason仅属服务端运行状态。EVIDENCE_ROUTING=false切回旧非空证据路由。结构化覆盖判断来自研究模型，应用层引用检查不等于独立语义验证。
+新增内部接口见LLD第8节。A新增policy事件对外返回生效选项、route、stop_reason；report/blocked保持服务端私有。EVIDENCE_ROUTING=false只切回研究内部旧路由，不关闭问题分类。结构化覆盖判断来自研究模型，应用层引用检查不等于独立语义验证。
 
 ## 4. 内部 API 与数据边界
 
@@ -159,3 +160,19 @@ SQLite当前文档 → 统一页/行窗口
 - [本地接口](../../static1/src/main.py)、[本地图](../../static1/src/agent/graph.py)、[本地检索](../../static1/src/knowledge.py)、[向量实现](../../static1/src/dense.py)：本文当前契约的依据。
 
 维护规则：改接口时同步第3、4节；改职责时同步第5节和IMPLEMENTATION.md；功能验收后更新Strata状态，并将任务、实现情况、分析评价、验证证据追加到dev_logs.md。只有上游升级、契约不明或具体缺陷需要溯源时重新查参考仓库。未公开的托管能力只记录可见输入输出，不猜测内部实现。
+
+## A 批次增量协议（2026-09-16）
+
+POST /api/chat可选字段：query_routing为auto/knowledge_only，evidence_level为low/middle/high；省略或null用服务默认。allowed_doc_ids为null（不限定）或1–20个文档ID；空数组不接受，未知ID进入明确提示而不放开范围。未经声明的字段仍返回422。
+
+policy事件数据：query_routing、evidence_level、allowed_doc_ids、route（direct/research/clarify）、stop_reason、notice。理解完成时发送一次，终态时更新stop_reason；模型错误/整轮超时若已有policy则先更新失败原因再发error，无done。分类尚未完成即取消/失败时可能没有policy，此时客户端保持未知并记录outcome。
+
+GET /api/health增加defaults与model_verified=false；api_key_configured仅表示配置存在，不进行主动模型探测。preparation不再作为POST /api/chat统一503门禁，研究分支单独检查；初始化时写入409规则保留。
+
+
+### B/C/D 增量接口（2026-09-17）
+- chat 新增 execution_mode: auto/quick/research；SSE新增 telemetry（阶段耗时、搜索/阅读计数）与 usage（实际调用数、已报告/完整用量）。
+- GET documents/{id}?section=true 保留旧坐标，按章节/代码块读取，携带版本与截断标识。
+- POST ingest/text 接收 title/origin/text；同来源更新文档。
+- GET workspace/sessions|notes；PUT workspace/{kind}/{id} 接收 revision/title/data，revision冲突返回409，单记录上限4MB。独立SQLite持久化。
+- 前端 workspace.ts 管理恢复及串行保存，Notes.tsx 管理人工笔记，SourceManager.tsx 管理来源范围和正文补充。笔记仅导航，不注入为事实来源。
