@@ -6,6 +6,8 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .routing import EvidenceLevel, QueryRouting
+
 STATIC1_ROOT = Path(__file__).resolve().parents[2]
 KNOWLEDGE_ROOT = STATIC1_ROOT.parent / "knowledge"
 
@@ -35,7 +37,10 @@ class Settings(BaseSettings):
     pdf_ocr_language: str = "eng"
     max_research_steps: int = Field(default=24, ge=4, le=100)
     max_rounds: int = Field(default=2, ge=1, le=3)
+    quick_verification: bool = True
     evidence_routing: bool = True
+    query_routing: QueryRouting = "auto"
+    evidence_level: EvidenceLevel = "middle"
     max_searches: int = Field(default=6, ge=1, le=20)
     run_timeout: float = Field(default=180, ge=10, le=600)
     langsmith_tracing: bool = False

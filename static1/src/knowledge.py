@@ -99,12 +99,14 @@ class Knowledge:
             raise KeyError("文档不存在")
         return {"doc_id": doc_id, "version": row[0], **json.loads(row[1])}
 
-    def search(self, query: str, limit: int = 6) -> list[dict]:
+    def search(self, query: str, limit: int = 6, *, allowed_doc_ids: list[str] | None = None) -> list[dict]:
         query_tokens = tokens(query)
         if not query_tokens:
             return []
         candidates, corpus, texts = [], [], []
         for doc in self.all():
+            if allowed_doc_ids is not None and doc["doc_id"] not in allowed_doc_ids:
+                continue
             for page in doc["pages"]:
                 lines = lines_for(page["text"])
                 for start in range(0, len(lines), 16):
@@ -129,11 +131,32 @@ class Knowledge:
         ranked = sorted(range(len(corpus)), key=lambda i: float(scores[i]), reverse=True)
         limit = max(1, min(limit, 10))
         sparse = [position for position in ranked if set(query_tokens).intersection(corpus[position])]
-        if self.dense is not None:
+        # Scoped BM25 never synchronizes a subset into the shared dense index.
+        if self.dense is not None and allowed_doc_ids is None:
             from .dense import fuse_rankings
             dense = self.dense.search(query, texts, candidates, max(20, limit * 3))
             sparse = fuse_rankings(sparse[:max(20, limit * 3)], dense, limit)
-        return [candidates[position] for position in sparse[:limit]]
+        results = [candidates[position] for position in sparse[:limit]]
+        if hasattr(self, "workspace"):
+            from .workspace import note_locators
+            for ref in reversed(note_locators(self.workspace, self, query, allowed_doc_ids)):
+                doc = self.get(ref["doc_id"])
+                results.insert(0, {"doc_id": doc["doc_id"], "version": doc["version"], "title": doc["title"],
+                                   "page": ref.get("page", 1), "start_line": ref.get("start_line", 1),
+                                   "snippet": "已确认笔记指向的原文位置；必须重新阅读原文"})
+        return results[:limit]
+
+    def read_section(self, doc_id: str, page: int = 1, start_line: int = 1, line_count: int = 60, version: str | None = None) -> dict:
+        from .reading import section_window
+        result = self.read(doc_id, page, start_line, line_count, version)
+        doc = self.get(doc_id)
+        if doc["version"] != result["version"]:
+            raise ValueError("文档已更新，请重新搜索")
+        text = next(p["text"] for p in doc["pages"] if p["number"] == page)
+        result.update(section_window(text, start_line))
+        result.update(captured_at=doc["captured_at"], snippet=result["text"][:300])
+        result["url"] = f"/api/documents/{doc_id}?page={page}&start_line={result['start_line']}&version={result['version']}&section=true"
+        return result
 
     def read(
         self,

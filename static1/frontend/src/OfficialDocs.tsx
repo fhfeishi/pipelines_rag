@@ -5,6 +5,7 @@ type Job = { status: string; total: number; completed: number; imported: number;
 export function OfficialDocs() {
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
+  const [connectionError, setConnectionError] = useState("");
   const [sending, setSending] = useState(false);
   useEffect(() => {
     let stopped = false;
@@ -13,8 +14,8 @@ export function OfficialDocs() {
         const response = await fetch("/api/official-docs");
         if (!response.ok) throw new Error("无法读取文档更新状态");
         const result = await response.json();
-        if (!stopped) setJob(result);
-      } catch (exception) { if (!stopped) setError(String(exception)); }
+        if (!stopped) { setJob(result); setConnectionError(""); }
+      } catch { if (!stopped) setConnectionError("文档更新状态暂不可用，正在重新连接。"); }
     };
     void refresh();
     const timer = setInterval(() => void refresh(), 2000);
@@ -36,5 +37,6 @@ export function OfficialDocs() {
     {job && job.status !== "idle" && <p role="status" className="mt-2 text-xs">{job.status === "running" ? "更新中" : job.status === "done" ? "更新完成" : "更新有失败项"} · {job.completed}/{job.total} · 成功 {job.imported}</p>}
     {!!job?.errors.length && <details className="mt-2 text-xs"><summary>失败 {job.errors.length} 项（再次更新可重试）</summary>{job.errors.map((item, index) => <p key={index}>{item.url} {item.error}</p>)}</details>}
     {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
+    {connectionError && <p role="alert" className="text-xs text-red-700">{connectionError}</p>}
   </section>;
 }

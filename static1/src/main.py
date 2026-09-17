@@ -13,9 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from .agent.config import STATIC1_ROOT, get_settings
 from .agent.graph import build_graph
 from .agent.models import tracing
+from .agent.routing import EvidenceLevel, QueryRouting
+from .agent.usage import TurnUsage
 from .knowledge import Knowledge
 from .official_docs import import_official
 from .parsers import import_defaults, parse_web
+from .workspace import Workspace
+from .workspace import router as workspace_router
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,10 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     messages: list[ChatMessage] = Field(min_length=1, max_length=20)
+    execution_mode: Literal["auto", "quick", "research"] = "auto"
+    query_routing: QueryRouting | None = None
+    evidence_level: EvidenceLevel | None = None
+    allowed_doc_ids: list[str] | None = Field(default=None, min_length=1, max_length=20)
 
 
 class WebRequest(BaseModel):
@@ -49,6 +57,8 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
     @asynccontextmanager
     async def lifespan(app):
         app.state.knowledge = knowledge or Knowledge(settings.data_dir / "knowledge.sqlite3", settings=settings)
+        app.state.workspace = Workspace(app.state.knowledge.path.parent / "workspace.sqlite3")
+        app.state.knowledge.workspace = app.state.workspace
         app.state.import_lock = asyncio.Lock()
         app.state.preview = None
         app.state.official_job = {"status": "idle", "total": 0, "completed": 0, "imported": 0, "changed": 0, "errors": []}
@@ -86,6 +96,8 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     app = FastAPI(title="Agentic RAG Static", version="0.2.0", lifespan=lifespan)
 
+    app.include_router(workspace_router)
+
     @app.get("/api/health")
     async def health(request: Request):
         docs_count = await asyncio.to_thread(request.app.state.knowledge.count)
@@ -95,14 +107,12 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
             "model": settings.model_name,
             "docs_count": docs_count,
             "api_key_configured": bool(settings.model_api_key),
+            "model_verified": False,
+            "defaults": {"query_routing": settings.query_routing, "evidence_level": settings.evidence_level},
             "web_provider": settings.web_provider,
             "preparation": request.app.state.preparation,
             "index_progress": request.app.state.knowledge.dense.progress if request.app.state.knowledge.dense else None,
         }
-
-    def require_ready():
-        if app.state.preparation != "ready":
-            raise HTTPException(503, "知识库正在加载，请等待页面显示就绪后发送" if app.state.preparation == "running" else "知识库加载失败，请检查终端日志并重启服务", headers={"Retry-After": "3"})
 
     @app.get("/api/documents")
     async def documents(request: Request):
@@ -137,11 +147,11 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     @app.get("/api/documents/{doc_id}")
     async def read_document(
-        request: Request, doc_id: str, page: int = 1, start_line: int = 1, version: str | None = None
+        request: Request, doc_id: str, page: int = 1, start_line: int = 1, version: str | None = None, section: bool = False
     ):
         try:
             return await asyncio.to_thread(
-                request.app.state.knowledge.read, doc_id, page, start_line, 60, version
+                (request.app.state.knowledge.read_section if section else request.app.state.knowledge.read), doc_id, page, start_line, 60, version
             )
         except KeyError as exc:
             raise HTTPException(404, "文档不存在") from exc
@@ -185,13 +195,14 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
     @app.post("/api/chat")
     async def chat(payload: ChatRequest, request: Request):
-        require_ready()
         if payload.messages[-1].role != "user":
             raise HTTPException(422, "最后一条消息必须来自用户")
         if sum(len(m.content) for m in payload.messages) > 40000:
             raise HTTPException(422, "对话上下文超过4万字符，请新建对话")
 
         async def stream():
+            policy = None
+            usage = TurnUsage()
             try:
                 async with asyncio.timeout(settings.run_timeout):
                     graph = graph_factory(app.state.knowledge, settings)
@@ -204,22 +215,40 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
                                 "searches": {},
                                 "report": None,
                                 "blocked": None,
+                                "preparation": app.state.preparation,
+                                "options": {"execution_mode": payload.execution_mode, "query_routing": payload.query_routing or settings.query_routing,
+                                            "evidence_level": payload.evidence_level or settings.evidence_level,
+                                            "allowed_doc_ids": payload.allowed_doc_ids},
                             },
                             stream_mode="custom",
-                            config={"recursion_limit": 12, "tags": ["static1", "agentic-rag"]},
+                            config={"recursion_limit": 12, "tags": ["static1", "agentic-rag"], "callbacks": [usage]},
                         ):
                             if await request.is_disconnected():
                                 return
+                            if event["event"] == "policy":
+                                policy = event["data"]
                             yield sse(event["event"], event["data"])
+                            if event["event"] == "telemetry":
+                                yield sse("usage", usage.snapshot())
+                    yield sse("usage", usage.snapshot())
                     yield sse("done", {"ok": True})
             except asyncio.CancelledError:
                 raise
             except ValueError as exc:
+                yield sse("usage", usage.snapshot())
+                if policy:
+                    yield sse("policy", {**policy, "stop_reason": "invalid_request"})
                 yield sse("error", {"message": str(exc)})
             except TimeoutError:
+                yield sse("usage", usage.snapshot())
+                if policy:
+                    yield sse("policy", {**policy, "stop_reason": "timed_out"})
                 yield sse("error", {"message": "运行达到时间预算，请缩小问题范围"})
             except Exception as exc:  # noqa: BLE001 - API boundary hides provider secrets
+                yield sse("usage", usage.snapshot())
                 logger.warning("chat failed: %s", type(exc).__name__)
+                if policy:
+                    yield sse("policy", {**policy, "stop_reason": "failed"})
                 yield sse("error", {"message": "问答未完成，请检查模型配置或稍后重试"})
 
         return StreamingResponse(

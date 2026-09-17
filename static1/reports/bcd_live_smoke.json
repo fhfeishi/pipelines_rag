@@ -1,0 +1,75 @@
+{
+  "before_fix": {
+    "case": "scoped_quick_verification",
+    "seconds": 12.56,
+    "statuses": [
+      "正在理解问题",
+      "研究第 1 轮：搜索并阅读原文",
+      "快速查证：搜索并核对原文",
+      "搜索文档：用一句话说明 LangGraph 的定位。",
+      "阅读：LangGraph overview",
+      "阅读：LangGraph overview",
+      "快速查证覆盖不足，沿用已有证据深入研究",
+      "阅读：LangGraph overview",
+      "阅读：LangGraph overview",
+      "核验已读证据及版本",
+      "基于已有材料回答或澄清必要条件",
+      "基于原文组织回答"
+    ],
+    "usage": {
+      "input_tokens": 18427,
+      "output_tokens": 1906,
+      "total_tokens": 20333,
+      "reported_tokens": 20333,
+      "calls": 4,
+      "reported_calls": 4,
+      "complete": true
+    },
+    "done": true,
+    "answer": "LangGraph 是一个低层级的编排框架与运行时，用于构建、管理和部署长时间运行、有状态的智能体 [3]。",
+    "ui_checks": [
+      "conversation_and_options_restored_after_reload",
+      "note_draft_saved"
+    ]
+  },
+  "after_fix": {
+    "case": "scoped_overview_after_reading_fix",
+    "seconds": 11.45,
+    "statuses": [
+      "正在理解问题",
+      "研究第 1 轮：搜索并阅读原文",
+      "快速查证：搜索并核对原文",
+      "搜索文档：用一句话说明 LangGraph 的定位。",
+      "阅读：LangGraph overview",
+      "阅读：LangGraph overview",
+      "快速查证完成",
+      "核验已读证据及版本",
+      "研究覆盖检查完成，开始组织答案",
+      "基于原文组织回答"
+    ],
+    "telemetry": {
+      "path": "quick",
+      "stages_ms": {
+        "understand": 17,
+        "research": 1967,
+        "validate": 1,
+        "answer": 851,
+        "finish": 0
+      },
+      "searches": 1,
+      "reads": 2,
+      "tokens": null
+    },
+    "usage": {
+      "input_tokens": 3469,
+      "output_tokens": 385,
+      "total_tokens": 3854,
+      "reported_tokens": 3854,
+      "calls": 2,
+      "reported_calls": 2,
+      "complete": true
+    },
+    "done": true,
+    "answer": "LangGraph 是一个低层级的智能体编排框架与运行时，用于构建、管理和部署长时间运行、有状态的智能体，让你能在同一张图里混合确定性的手写步骤与 LLM 驱动的智能体步骤，以实现细粒度控制 [2]。"
+  }
+}

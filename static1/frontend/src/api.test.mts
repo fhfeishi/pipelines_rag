@@ -44,3 +44,18 @@ test('done is terminal without waiting for socket closure or processing trailing
     assert.equal(cancelled, true);
   } finally { globalThis.fetch = original; }
 });
+
+test('sends requested options and delivers server policy without guessing route', async () => {
+  const original = globalThis.fetch;
+  const options = { query_routing: 'auto' as const, evidence_level: 'high' as const, allowed_doc_ids: ['doc'] };
+  const policy = { ...options, route: 'research', stop_reason: 'covered' };
+  globalThis.fetch = async (_url, init) => {
+    assert.deepEqual(JSON.parse(init!.body as string), { messages: [], ...options });
+    return new Response(`event: policy\ndata: ${JSON.stringify(policy)}\n\nevent: done\ndata: {"ok":true}\n\n`);
+  };
+  try {
+    const events: unknown[] = [];
+    await streamChat([], new AbortController().signal, event => events.push(event), options);
+    assert.deepEqual(events[0], { event: 'policy', data: policy });
+  } finally { globalThis.fetch = original; }
+});

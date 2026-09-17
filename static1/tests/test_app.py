@@ -104,7 +104,12 @@ def test_sse_success_and_failure(tmp_path):
 
 
 def test_preparation_guards_and_lightweight_health(tmp_path, monkeypatch):
-    app, store = setup(tmp_path)
+    class Graph:
+        async def astream(self, state, **kwargs):
+            assert state["preparation"] in ("running", "error")
+            yield {"event": "token", "data": {"text": "路由按能力决定是否查证"}}
+
+    app, store = setup(tmp_path, lambda *args: Graph())
     with TestClient(app) as client:
         def unexpected_read():
             raise AssertionError("Health must not deserialize the corpus")
@@ -116,14 +121,13 @@ def test_preparation_guards_and_lightweight_health(tmp_path, monkeypatch):
         assert health["docs_count"] == 0
         payload = {"messages": [{"role": "user", "content": "question"}]}
         response = client.post("/api/chat", json=payload)
-        assert response.status_code == 503
-        assert response.headers["retry-after"] == "3"
-        assert "加载" in response.json()["detail"]
+        assert response.status_code == 200
+        assert "event: done" in response.text
         assert client.post("/api/official-docs", json={}).status_code == 409
         assert client.post("/api/ingest/local").status_code == 409
         assert client.post("/api/web/confirm/unknown").status_code == 409
         app.state.preparation = "error"
-        assert "失败" in client.post("/api/chat", json=payload).json()["detail"]
+        assert "event: done" in client.post("/api/chat", json=payload).text
 
 
 @pytest.mark.parametrize("outcome", ["success", "empty", "failure"])

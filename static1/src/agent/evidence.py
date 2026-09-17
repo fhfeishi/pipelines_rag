@@ -76,6 +76,17 @@ def merge_reports(previous: dict | None, current: dict | None) -> dict | None:
     return {**current, "assessments": list(items.values())}
 
 
+def preserve_blocked_report(report: dict | None, blocked: dict | None) -> dict | None:
+    """Only a verified inventory/tool block may mark an unrepairable subquestion."""
+    if not blocked:
+        return report
+    question = blocked.get("question") or blocked["source"]
+    items = [item for item in (report or {}).get("assessments", []) if item["question"] != question]
+    items.append({"question": question, "status": "unsupported", "evidence_ids": [],
+                  "gap": "corpus_missing", "next_action": "stop", "detail": blocked["source"]})
+    return {"answer_mode": (report or {}).get("answer_mode", "consultation"), "assessments": items}
+
+
 def decide(report: dict | None, *, blocked: bool, rounds: int, max_rounds: int,
            new_evidence: int, evidence_count: int, searches: int, max_searches: int) -> str:
     if blocked:

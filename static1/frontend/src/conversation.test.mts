@@ -2,6 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { newTurn, receiveEvent, regenerateTurn, stopTurn } from './conversation.ts';
 
+test('usage belongs to one attempt, survives export and resets on regeneration', () => {
+  const usage = { input_tokens: 20, output_tokens: 6, total_tokens: 26, reported_tokens: 26, calls: 2, reported_calls: 2, complete: true };
+  let turn = receiveEvent(newTurn('问题', []), { event: 'usage', data: usage }, 100);
+  turn = receiveEvent(turn, { event: 'done', data: { ok: true } }, 200);
+  assert.deepEqual(JSON.parse(JSON.stringify(turn)).usage, usage);
+  const retry = regenerateTurn(turn, []);
+  assert.equal(retry.usage, undefined);
+  assert.deepEqual(retry.previousAttempts[0].usage, usage);
+  const incomplete = receiveEvent(retry, { event: 'usage', data: { ...usage, total_tokens: null, complete: false } }, 50);
+  assert.equal(stopTurn(incomplete, true, 80).usage?.total_tokens, null);
+});
+
 test('first token ignores status, sources and empty chunks; completion freezes elapsed time', () => {
   let turn = newTurn('问题', []);
   turn = receiveEvent(turn, { event: 'status', data: { message: '正在研究' } }, 100);
@@ -55,4 +67,37 @@ test('regeneration reuses original request, archives attempts and resets timers'
   assert.deepEqual(newTurn('下一问', [first, stopTurn(retry, true, 90)]).requestMessages, [
     { role: 'user', content: '第一问' }, { role: 'assistant', content: '第一答' }, { role: 'user', content: '下一问' },
   ]);
+});
+
+test('effective policy is versioned, exported and reused independently of session changes', () => {
+  const session = { query_routing: 'auto' as const, evidence_level: 'low' as const, allowed_doc_ids: ['a'] };
+  let turn = newTurn('仅按资料回答', [], session);
+  session.allowed_doc_ids.push('b');
+  assert.deepEqual(turn.options.allowed_doc_ids, ['a']);
+  turn = receiveEvent(turn, { event: 'policy', data: { query_routing: 'knowledge_only', evidence_level: 'low', allowed_doc_ids: ['a'], route: 'research', stop_reason: 'covered' } }, 50);
+  turn = receiveEvent(turn, { event: 'token', data: { text: '结论 [1]' } }, 70);
+  turn = receiveEvent(turn, { event: 'done', data: { ok: true } }, 100);
+  const retry = regenerateTurn(turn, []);
+  assert.equal(retry.options.query_routing, 'knowledge_only');
+  assert.equal(retry.options.evidence_level, 'low');
+  assert.equal(retry.policy, null);
+  const exported = JSON.parse(JSON.stringify(retry));
+  assert.equal(exported.previousAttempts[0].policy.stop_reason, 'covered');
+  assert.equal(exported.previousAttempts[0].answer, '结论 [1]');
+  const cancelled = stopTurn(retry, true, 120);
+  assert.deepEqual(receiveEvent(cancelled, { event: 'policy', data: turn.policy! }, 200), cancelled);
+});
+
+
+test("restoration retains effective config and prior versions while excluding interrupted output", async () => {
+  const { restoreTurns, newTurn, regenerateTurn } = await import("./conversation.ts");
+  const first = newTurn("question", [], {query_routing: "knowledge_only", evidence_level: "high", allowed_doc_ids: ["doc"], execution_mode: "research"});
+  const running = regenerateTurn({...first, answer: "old", complete: true, outcome: "completed"}, []);
+  running.answer = "partial";
+  const restored = restoreTurns([running]);
+  assert.equal(restored[0].outcome, "cancelled");
+  assert.equal(restored[0].answer, "partial");
+  assert.equal(restored[0].options.execution_mode, "research");
+  assert.equal(restored[0].previousAttempts[0].answer, "old");
+  assert.equal(newTurn("next", restored).requestMessages.length, 1);
 });

@@ -25,6 +25,11 @@ async def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             await page.route("**/api/health", lambda r: r.fulfill(json={"preparation": "ready", "api_key_configured": True, "model": "offline-test"}))
             await page.route("**/api/documents", lambda r: r.fulfill(json=[]))
+            await page.route("**/api/workspace/*", lambda r: r.fulfill(json=[]))
+            await page.route("**/api/workspace/sessions/*", lambda r: r.fulfill(json={
+                **r.request.post_data_json, "id": r.request.url.rsplit("/", 1)[-1],
+                "revision": r.request.post_data_json["revision"] + 1,
+            }))
             await page.route("**/api/official-docs", lambda r: r.fulfill(json={"status": "idle", "errors": []}))
             await page.add_init_script("""(() => {
                 const realFetch = window.fetch.bind(window);
@@ -66,7 +71,10 @@ async def main():
             await article.get_by_role("button", name="重新生成").click()
             await expect(article.get_by_role("button", name="重新生成")).to_be_enabled()
             requests = await page.evaluate("window.requests")
-            assert requests[0] == requests[1] == {"messages": [{"role": "user", "content": "第一问"}]}
+            assert requests[0] == requests[1]
+            assert requests[0]["messages"] == [{"role": "user", "content": "第一问"}]
+            assert requests[0]["query_routing"] == "auto"
+            assert requests[0]["evidence_level"] == "middle"
             await article.get_by_text("之前的回答 · 1 个版本", exact=True).click()
             await expect(article.get_by_text("答案版本1", exact=True)).to_be_visible()
             await expect(article.get_by_text("答案版本2", exact=True)).to_be_visible()

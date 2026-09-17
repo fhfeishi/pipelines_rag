@@ -24,7 +24,7 @@ def assessment(question="召回", status="unsupported", ids=None, action="search
 
 
 def run(store, model, **settings):
-    app = graph.build_graph(store, Settings(_env_file=None, **settings), model)
+    app = graph.build_graph(store, Settings(_env_file=None, query_routing="knowledge_only", **settings), model)
     return asyncio.run(app.ainvoke({"messages": [{"role": "user", "content": "比较召回与控制流"}],
                                   "evidence": [], "rounds": 0}))
 
@@ -62,7 +62,9 @@ def test_nonempty_partial_research_repairs_only_gap(tmp_path, monkeypatch):
     monkeypatch.setattr(graph, "create_deep_agent", factory)
     result = run(store, AnswerModel())
     assert len(calls) == 2 and result["stop_reason"] == "covered"
-    assert len(result["evidence"]) == 2
+    # Section expansion already covers line 61; the second read reuses that evidence.
+    assert len(result["evidence"]) == 1
+    assert result["evidence"][0]["end_line"] >= 61
     assert result["report"]["assessments"][1]["status"] == "supported"
 
 
@@ -115,7 +117,7 @@ def test_real_deepagent_propagates_verified_gap_without_another_model_call(tmp_p
     model = ToolModel(responses=[AIMessage(content="", tool_calls=[{
         "id": "gap", "name": "check_corpus_page", "args": {"source_url": url}, "type": "tool_call",
     }]), AIMessage(content="SHOULD NOT BE CALLED")])
-    app = graph.build_graph(corpus(tmp_path), Settings(_env_file=None), model)
+    app = graph.build_graph(corpus(tmp_path), Settings(_env_file=None, query_routing="knowledge_only"), model)
     result = asyncio.run(app.ainvoke({"messages": [{"role": "user", "content": "请解释该页面 " + url}],
                                      "evidence": [], "rounds": 0}))
     assert result["stop_reason"] == "corpus_unavailable"
@@ -135,7 +137,7 @@ def test_real_finish_tool_terminates_inner_agent(tmp_path):
 
 def test_hard_stop_guards_queued_tools_and_rejects_invented_url(tmp_path, monkeypatch):
     store = corpus(tmp_path)
-    monkeypatch.setattr(store, "search", lambda *args: pytest.fail("Search after hard stop"))
+    monkeypatch.setattr(store, "search", lambda *args, **kwargs: pytest.fail("Search after hard stop"))
     url = "https://docs.langchain.com/oss/python/langchain/needed"
 
     def factory(**kwargs):
@@ -154,7 +156,7 @@ def test_hard_stop_guards_queued_tools_and_rejects_invented_url(tmp_path, monkey
         return Agent()
 
     monkeypatch.setattr(graph, "create_deep_agent", factory)
-    app = graph.build_graph(store, Settings(_env_file=None), object())
+    app = graph.build_graph(store, Settings(_env_file=None, query_routing="knowledge_only", quick_verification=False), object())
     result = asyncio.run(app.ainvoke({"messages": [{"role": "user", "content": url}], "evidence": [], "rounds": 0}))
     assert result["blocked"]
 

@@ -19,6 +19,7 @@ def model_for(settings: Settings):
         timeout=60,
         max_retries=1,
         max_tokens=4096,
+        stream_usage=True,
     )
 
 
