@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 
 type Job = { status: string; total: number; completed: number; imported: number; errors: { url?: string; error: string }[] };
 
-export function OfficialDocs() {
+export function OfficialDocs({ connected = true }: { connected?: boolean }) {
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
   const [connectionError, setConnectionError] = useState("");
   const [sending, setSending] = useState(false);
   useEffect(() => {
+    if (!connected) return;
     let stopped = false;
     const refresh = async () => {
       try {
@@ -20,7 +21,7 @@ export function OfficialDocs() {
     void refresh();
     const timer = setInterval(() => void refresh(), 2000);
     return () => { stopped = true; clearInterval(timer); };
-  }, []);
+  }, [connected]);
   async function update() {
     setSending(true); setError("");
     try {

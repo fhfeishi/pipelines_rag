@@ -95,9 +95,33 @@ test("restoration retains effective config and prior versions while excluding in
   const running = regenerateTurn({...first, answer: "old", complete: true, outcome: "completed"}, []);
   running.answer = "partial";
   const restored = restoreTurns([running]);
-  assert.equal(restored[0].outcome, "cancelled");
+  assert.equal(restored[0].outcome, "interrupted");
   assert.equal(restored[0].answer, "partial");
   assert.equal(restored[0].options.execution_mode, "research");
   assert.equal(restored[0].previousAttempts[0].answer, "old");
   assert.equal(newTurn("next", restored).requestMessages.length, 1);
+});
+
+test("interruption closes live steps and stale run events cannot enter a new answer", async () => {
+  const { newTurn, receiveEvent, stopTurn } = await import("./conversation.ts");
+  let turn = newTurn("question", []);
+  turn = receiveEvent(turn, {event: "step", data: {run_id: turn.runId, id: "one", sequence: 1, phase: "search", status: "running", label: "搜索资料"}}, 10);
+  const stopped = stopTurn(turn, true, 20);
+  assert.equal(stopped.steps[0].status, "interrupted");
+  const next = newTurn("next", []);
+  const stale = receiveEvent(next, {event: "step", data: {...turn.steps[0], run_id: turn.runId, status: "completed"}}, 30);
+  assert.equal(stale.steps.length, 0);
+});
+
+test("editing a historical question creates a clean branch before that turn", async () => {
+  const { branchFromTurn, newTurn, receiveEvent } = await import("./conversation.ts");
+  const finish = (turn: ReturnType<typeof newTurn>, answer: string) => receiveEvent(receiveEvent(turn, {event: "token", data: {text: answer}}, 10), {event: "done", data: {ok: true}}, 20);
+  const first = finish(newTurn("first", []), "one");
+  const second = finish(newTurn("second", [first], {query_routing: "knowledge_only", evidence_level: "high", allowed_doc_ids: ["doc"], execution_mode: "research"}), "two");
+  const third = finish(newTurn("third", [first, second]), "three");
+  const branch = branchFromTurn([first, second, third], 1);
+  assert.deepEqual(branch.history.map(turn => turn.question), ["first"]);
+  assert.equal(branch.options.query_routing, "knowledge_only");
+  assert.deepEqual(branch.options.allowed_doc_ids, ["doc"]);
+  assert.equal([first, second, third][2].answer, "three");
 });

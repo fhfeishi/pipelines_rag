@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
 from src.agent.graph import build_graph
-from src.agent.usage import TurnUsage
+from src.agent.usage import ModelBudgetExceeded, TurnUsage
 from tests.test_app import setup
 
 
@@ -33,6 +33,24 @@ def test_usage_deduplicates_and_keeps_missing_unknown():
         assert not ledger.snapshot()["complete"]
         await ledger.on_llm_end(result(raw={"token_usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}}), run_id=second)
         assert ledger.snapshot()["total_tokens"] == 20
+    asyncio.run(check())
+
+
+def test_usage_explains_missing_calls_and_reserves_final_answer():
+    async def check():
+        ledger = TurnUsage(max_calls=2)
+        first, second = uuid4(), uuid4()
+        ledger.set_phase("research")
+        await ledger.on_chat_model_start({}, [], run_id=first)
+        await ledger.on_llm_end(result(), run_id=first)
+        assert ledger.snapshot()["missing_reasons"] == {"provider_did_not_report": 1}
+        try:
+            await ledger.on_chat_model_start({}, [], run_id=second)
+            raise AssertionError("research used the reserved final call")
+        except ModelBudgetExceeded:
+            pass
+        ledger.set_phase("answer")
+        await ledger.on_chat_model_start({}, [], run_id=second)
     asyncio.run(check())
 
 

@@ -2,6 +2,16 @@ import pytest
 
 from src.agent.config import Settings
 from src.knowledge import Document, Knowledge, Page
+
+
+def test_search_first_page_keeps_multiple_sources(tmp_path):
+    store = Knowledge(tmp_path / "diverse.sqlite3")
+    store.put(Document(title="dominant", origin="one", kind="text", parser="test",
+                       pages=[Page(number=1, text=("shared retrieval term detail\n" * 100))]))
+    second = store.put(Document(title="other", origin="two", kind="text", parser="test",
+                                pages=[Page(number=1, text="shared retrieval term from another source")]))
+    hits = store.search("shared retrieval term", limit=4)
+    assert second["doc_id"] in {hit["doc_id"] for hit in hits[:3]}
 from src.parsers import import_defaults, parse_file, session_for
 
 

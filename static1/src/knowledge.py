@@ -136,7 +136,14 @@ class Knowledge:
             from .dense import fuse_rankings
             dense = self.dense.search(query, texts, candidates, max(20, limit * 3))
             sparse = fuse_rankings(sparse[:max(20, limit * 3)], dense, limit)
-        results = [candidates[position] for position in sparse[:limit]]
+        # Keep one source from monopolising the first page while retaining score order.
+        diverse, deferred, per_doc = [], [], {}
+        for position in sparse:
+            candidate = candidates[position]
+            count = per_doc.get(candidate["doc_id"], 0)
+            (diverse if count < 2 else deferred).append(candidate)
+            per_doc[candidate["doc_id"]] = count + 1
+        results = (diverse + deferred)[:limit]
         if hasattr(self, "workspace"):
             from .workspace import note_locators
             for ref in reversed(note_locators(self.workspace, self, query, allowed_doc_ids)):

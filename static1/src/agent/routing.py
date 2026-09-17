@@ -7,6 +7,8 @@ from typing import Literal
 from langchain_core.messages import SystemMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .usage import ModelBudgetExceeded
+
 QueryRouting = Literal["auto", "knowledge_only"]
 EvidenceLevel = Literal["low", "middle", "high"]
 
@@ -55,6 +57,8 @@ async def classify(messages: list[dict], llm) -> tuple[Intent, str]:
     except TimeoutError:
         return Intent(route="research", intent="unclear"), "routing_timeout"
     except asyncio.CancelledError:
+        raise
+    except ModelBudgetExceeded:
         raise
     except Exception:  # noqa: BLE001 - provider boundary must not leak secrets
         # Provider errors must not accidentally unlock unsupported free answers.
@@ -117,4 +121,3 @@ def answer_policy(policy: dict) -> str:
     if policy["evidence_level"] == "low":
         return "可以使用一般知识、类比和假设，简短自然；推测明确标记。不能编造具体API、版本、来源和事实。"
     return "优先陈述有依据的结论；可补充明确标为一般知识或有条件建议的内容，不能冒充资料结论。"
-

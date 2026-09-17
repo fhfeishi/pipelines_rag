@@ -88,7 +88,8 @@ def preserve_blocked_report(report: dict | None, blocked: dict | None) -> dict |
 
 
 def decide(report: dict | None, *, blocked: bool, rounds: int, max_rounds: int,
-           new_evidence: int, evidence_count: int, searches: int, max_searches: int) -> str:
+           new_evidence: int, evidence_count: int, searches: int, max_searches: int,
+           max_reads: int = 6) -> str:
     if blocked:
         return "corpus_unavailable"
     if report is None:
@@ -100,7 +101,7 @@ def decide(report: dict | None, *, blocked: bool, rounds: int, max_rounds: int,
         return "round_limit"
     if rounds > 1 and new_evidence == 0:
         return "no_progress"
-    if evidence_count >= 6:
+    if evidence_count >= max_reads:
         return "read_limit"
     actions = [item["next_action"] for item in items if item["status"] != "supported"]
     if "read" in actions or ("search" in actions and searches < max_searches):

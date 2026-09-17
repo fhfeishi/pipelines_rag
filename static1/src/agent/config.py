@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     query_routing: QueryRouting = "auto"
     evidence_level: EvidenceLevel = "middle"
     max_searches: int = Field(default=6, ge=1, le=20)
+    max_reads: int = Field(default=8, ge=2, le=20)
+    max_model_calls: int = Field(default=12, ge=3, le=40)
+    research_timeout: float = Field(default=120, ge=10, le=540)
     run_timeout: float = Field(default=180, ge=10, le=600)
     langsmith_tracing: bool = False
     langsmith_api_key: SecretStr | None = None

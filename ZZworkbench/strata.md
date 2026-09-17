@@ -96,3 +96,13 @@ LLM plans and iteratively selects retrieval tools
 - `others`: 图片？有很多样的形式，普通的jpg，excel中联合单元格填充颜色构建的图表？（这种解析出来绝对是零散的无意义的颜色块、文本短语）
 
 step2：`langchain_core.documents.Document`类封装
+
+
+
+
+> MultiModel-embedding 
+怎么用？
+
+
+
+> 

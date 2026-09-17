@@ -47,7 +47,7 @@ SQLite是可引用原文的事实来源；Chroma是可重建的检索索引。�
 | agent.py：Agent与middleware组合 | graph.py研究/核验/回答、models.py模型入口 | 按失败案例抽取重试与上下文策略 |
 | ingress_guards_middleware.py | main.py消息数量、长度和总预算 | 预算策略统一化 |
 | summarization_middleware.py | 当前限定历史长度 | 有来源保留规则的历史摘要 |
-| frontend/lib/hooks/chat/use-stream-handler.ts | frontend/src/api.ts SSE状态、正文、中断 | run_id、耗时、可复盘的工具事件 |
+| frontend/lib/hooks/chat/use-stream-handler.ts | frontend/src/api.ts SSE状态、正文、中断、run_id与结构化步骤 | 继续用失败对话校正步骤粒度 |
 | identity.py托管身份及线程归属 | 本地单用户、请求级状态 | 本地持久会话，不照搬账号系统 |
 | connectors/langsmith.py反馈与trace访问 | 可选LangSmith tracing | 本地反馈、执行记录与评估关联 |
 | src/tools/link_check_tools.py | 本地来源版本核验 | 外部官方链接可访问性检查，两者不等价 |
@@ -70,7 +70,7 @@ Pylon支持文章可能需要凭据，不能当作已公开可获取语料。Lan
 | POST /api/ingest/local | 无 | import_defaults的逐文件导入报告 | 单文件失败由导入报告表达 |
 | POST /api/web/preview | {url} | preview_id及Document正文 | 422输入/抓取超时；502抓取失败 |
 | POST /api/web/confirm/{preview_id} | 无 | doc_id、version、title、changed | 409预览过期 |
-| POST /api/chat | messages及可选query_routing/evidence_level/allowed_doc_ids | status/policy/sources/token/done/error事件 | 422输入；开始流后用error事件 |
+| POST /api/chat | messages、可选run_id/query_routing/evidence_level/allowed_doc_ids | step/status/policy/sources/telemetry/usage/token/done/error事件 | 422输入；开始流后用error事件 |
 
 网页预览只保留最近一次，重启失效。确认时使用服务端保存的正文，不接受前端替换正文。导入操作有进程内锁；当前按单进程单用户运行，不宣称多worker一致性。
 
@@ -89,7 +89,7 @@ POST /api/chat
   → sources → token* → 最终policy → done
 ```
 
-status可在各阶段重复出现。sources包含实际已读正文证据及citation编号；token为{text}；done为{ok:true}。异常输出error:{message}，不得当作成功完成；没有done的断流也属未完成。前端AbortSignal关闭请求；服务器取消当前协程，但不保证立即终止已经在线程中执行的解析/embedding计算。
+step包含run_id、稳定step id、顺序、phase、status和可选detail，来自实际节点及search/read工具边界。sources包含实际已读正文证据及citation编号；token为{text}；done为{ok:true}。异常输出error:{message}，不得当作成功完成；没有done的断流也属未完成。前端AbortSignal关闭请求；用户中断或网络断开时客户端标为“已中断/结果未确认”，保留最后收到的usage，不能承诺服务端最终事件或精确结算。
 
 新增内部接口见LLD第8节。A新增policy事件对外返回生效选项、route、stop_reason；report/blocked保持服务端私有。EVIDENCE_ROUTING=false只切回研究内部旧路由，不关闭问题分类。结构化覆盖判断来自研究模型，应用层引用检查不等于独立语义验证。
 
@@ -176,3 +176,12 @@ GET /api/health增加defaults与model_verified=false；api_key_configured仅表�
 - POST ingest/text 接收 title/origin/text；同来源更新文档。
 - GET workspace/sessions|notes；PUT workspace/{kind}/{id} 接收 revision/title/data，revision冲突返回409，单记录上限4MB。独立SQLite持久化。
 - 前端 workspace.ts 管理恢复及串行保存，Notes.tsx 管理人工笔记，SourceManager.tsx 管理来源范围和正文补充。笔记仅导航，不注入为事实来源。
+
+
+### 已实施：真实步骤与运行生命周期统一（2026-09-17）
+
+节点、搜索和阅读工具产生统一的结构化步骤事件，携带run与step标识、顺序、所属阶段及状态；前端处理过程与运行记录共同消费，历史按回答版本保存。模型用量按调用记录phase及缺失原因。禁止从状态文案反推步骤或从模型文本生成执行轨迹。
+
+编辑历史问题重问时新建运行，输入仅包含该轮之前的有效上下文；原问题及其后续回答保留为旧版本，旧流事件不能影响新运行。主动断开按停止→保存→断开处理，暂停轮询/自动重连；重新连接恢复服务状态与历史。连接状态分别表达服务、知识库、模型配置及最近调用结果。
+
+当前请求式架构只能保证客户端最后已收到的状态：正常结束和服务端异常由服务端收束；主动中断或网络断开由客户端收束为未确认。没有最终usage时继续标为不完整。没有引入后台任务平台。

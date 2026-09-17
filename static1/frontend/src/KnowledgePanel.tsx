@@ -10,14 +10,14 @@ async function api(path: string, body?: object) {
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '请求失败');
   return data;
 }
-export function KnowledgePanel() {
+export function KnowledgePanel({ connected = true }: { connected?: boolean }) {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [preview, setPreview] = useState<Preview | null>(null);
   const refresh = async () => setDocs(await api('/api/documents'));
-  useEffect(() => { refresh().catch(() => setNotice('知识库服务未连接')); }, []);
+  useEffect(() => { if (connected) refresh().catch(() => setNotice('知识库服务未连接')); }, [connected]);
   async function run(action: () => Promise<void>) {
     setBusy(true); setNotice('正在处理…');
     try { await action(); } catch (e) { setNotice(e instanceof Error ? e.message : '操作失败'); }

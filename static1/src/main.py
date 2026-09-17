@@ -5,6 +5,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -37,6 +38,7 @@ class ChatRequest(BaseModel):
     query_routing: QueryRouting | None = None
     evidence_level: EvidenceLevel | None = None
     allowed_doc_ids: list[str] | None = Field(default=None, min_length=1, max_length=20)
+    run_id: str = Field(default_factory=lambda: uuid4().hex, min_length=8, max_length=80)
 
 
 class WebRequest(BaseModel):
@@ -202,7 +204,7 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
 
         async def stream():
             policy = None
-            usage = TurnUsage()
+            usage = TurnUsage(settings.max_model_calls)
             try:
                 async with asyncio.timeout(settings.run_timeout):
                     graph = graph_factory(app.state.knowledge, settings)
@@ -215,6 +217,7 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
                                 "searches": {},
                                 "report": None,
                                 "blocked": None,
+                                "runtime_usage": usage,
                                 "preparation": app.state.preparation,
                                 "options": {"execution_mode": payload.execution_mode, "query_routing": payload.query_routing or settings.query_routing,
                                             "evidence_level": payload.evidence_level or settings.evidence_level,
@@ -227,25 +230,28 @@ def create_app(settings=None, knowledge=None, graph_factory=build_graph):
                                 return
                             if event["event"] == "policy":
                                 policy = event["data"]
-                            yield sse(event["event"], event["data"])
+                            data = event["data"]
+                            if event["event"] in {"step", "telemetry"}:
+                                data = {**data, "run_id": payload.run_id}
+                            yield sse(event["event"], data)
                             if event["event"] == "telemetry":
-                                yield sse("usage", usage.snapshot())
-                    yield sse("usage", usage.snapshot())
+                                yield sse("usage", {**usage.snapshot(), "run_id": payload.run_id})
+                    yield sse("usage", {**usage.snapshot(), "run_id": payload.run_id})
                     yield sse("done", {"ok": True})
             except asyncio.CancelledError:
                 raise
             except ValueError as exc:
-                yield sse("usage", usage.snapshot())
+                yield sse("usage", {**usage.snapshot(), "run_id": payload.run_id})
                 if policy:
                     yield sse("policy", {**policy, "stop_reason": "invalid_request"})
                 yield sse("error", {"message": str(exc)})
             except TimeoutError:
-                yield sse("usage", usage.snapshot())
+                yield sse("usage", {**usage.snapshot(), "run_id": payload.run_id})
                 if policy:
                     yield sse("policy", {**policy, "stop_reason": "timed_out"})
                 yield sse("error", {"message": "运行达到时间预算，请缩小问题范围"})
             except Exception as exc:  # noqa: BLE001 - API boundary hides provider secrets
-                yield sse("usage", usage.snapshot())
+                yield sse("usage", {**usage.snapshot(), "run_id": payload.run_id})
                 logger.warning("chat failed: %s", type(exc).__name__)
                 if policy:
                     yield sse("policy", {**policy, "stop_reason": "failed"})
